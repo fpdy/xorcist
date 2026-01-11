@@ -1,7 +1,9 @@
 //! Application state management.
 
+use tui_input::Input;
+
 use crate::error::XorcistError;
-use crate::jj::{JjRunner, LogEntry, ShowOutput, fetch_show};
+use crate::jj::{JjRunner, LogEntry, ShowOutput, fetch_log, fetch_show};
 
 /// Current view mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -9,6 +11,28 @@ pub enum View {
     #[default]
     Log,
     Detail,
+}
+
+/// Input mode for text entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    /// Entering description for `jj describe -m`.
+    Describe,
+    /// Entering bookmark name for `jj bookmark set`.
+    BookmarkSet,
+    /// Creating new change with message for `jj new -m`.
+    NewWithMessage,
+}
+
+impl InputMode {
+    /// Get the placeholder text for this input mode.
+    pub fn placeholder(&self) -> &'static str {
+        match self {
+            InputMode::Describe => "Enter commit message...",
+            InputMode::BookmarkSet => "Enter bookmark name...",
+            InputMode::NewWithMessage => "Enter message (empty for no message)...",
+        }
+    }
 }
 
 /// State for detail view.
@@ -20,6 +44,74 @@ pub struct DetailState {
     pub scroll: usize,
     /// Total content height (for scroll calculation).
     pub content_height: usize,
+}
+
+/// Pending action for confirmation dialog.
+#[derive(Debug, Clone)]
+pub enum PendingAction {
+    /// Abandon a change.
+    Abandon {
+        change_id: String,
+        description: String,
+    },
+    /// Squash a change into its parent.
+    Squash {
+        change_id: String,
+        description: String,
+    },
+    /// Push to remote.
+    GitPush,
+    /// Undo the last operation.
+    Undo,
+}
+
+impl PendingAction {
+    /// Get the confirmation message for this action.
+    pub fn confirm_message(&self) -> String {
+        match self {
+            PendingAction::Abandon { description, .. } => {
+                format!("Abandon change: \"{}\"?", truncate_str(description, 40))
+            }
+            PendingAction::Squash { description, .. } => {
+                format!(
+                    "Squash change: \"{}\" into parent?",
+                    truncate_str(description, 40)
+                )
+            }
+            PendingAction::GitPush => "Push to remote?".to_string(),
+            PendingAction::Undo => "Undo last operation?".to_string(),
+        }
+    }
+}
+
+/// Truncate a string to a maximum length with ellipsis.
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
+}
+
+/// Modal dialog state.
+#[derive(Debug, Clone, Default)]
+pub enum ModalState {
+    /// No modal is shown.
+    #[default]
+    None,
+    /// Confirmation dialog for a pending action.
+    Confirm(PendingAction),
+}
+
+/// Result of a command execution.
+#[derive(Debug, Clone)]
+pub struct CommandResult {
+    /// The command that was executed.
+    pub command: String,
+    /// Whether the command succeeded.
+    pub success: bool,
+    /// Output message (stdout or stderr).
+    pub message: String,
 }
 
 /// Application state.
@@ -40,6 +132,14 @@ pub struct App {
     pub show_help: bool,
     /// jj command runner.
     runner: JjRunner,
+    /// Modal dialog state.
+    pub modal: ModalState,
+    /// Last command result for status display.
+    pub last_command_result: Option<CommandResult>,
+    /// Current input mode (if any).
+    pub input_mode: Option<InputMode>,
+    /// Text input buffer.
+    pub input: Input,
 }
 
 impl App {
@@ -54,6 +154,10 @@ impl App {
             detail_state: None,
             show_help: false,
             runner,
+            modal: ModalState::default(),
+            last_command_result: None,
+            input_mode: None,
+            input: Input::default(),
         }
     }
 
@@ -156,6 +260,239 @@ impl App {
             }
         }
     }
+
+    /// Get the currently selected entry.
+    pub fn selected_entry(&self) -> Option<&LogEntry> {
+        self.entries.get(self.selected)
+    }
+
+    /// Refresh log entries.
+    pub fn refresh_log(&mut self) -> Result<(), XorcistError> {
+        self.entries = fetch_log(&self.runner, Some(500))?;
+        // Clamp selection to valid range
+        if !self.entries.is_empty() && self.selected >= self.entries.len() {
+            self.selected = self.entries.len() - 1;
+        }
+        Ok(())
+    }
+
+    /// Handle command result (store for status display).
+    fn handle_command_result(&mut self, result: Result<CommandResult, XorcistError>) {
+        match result {
+            Ok(cmd_result) => {
+                self.last_command_result = Some(cmd_result);
+            }
+            Err(e) => {
+                self.last_command_result = Some(CommandResult {
+                    command: "unknown".to_string(),
+                    success: false,
+                    message: e.to_string(),
+                });
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Modal dialog management
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Check if a modal is currently shown.
+    pub fn is_modal_open(&self) -> bool {
+        !matches!(self.modal, ModalState::None)
+    }
+
+    /// Close the modal dialog without executing.
+    pub fn close_modal(&mut self) {
+        self.modal = ModalState::None;
+    }
+
+    /// Show confirmation dialog for abandon.
+    pub fn show_abandon_confirm(&mut self) {
+        if let Some(entry) = self.selected_entry() {
+            self.modal = ModalState::Confirm(PendingAction::Abandon {
+                change_id: entry.change_id.clone(),
+                description: entry.description.clone(),
+            });
+        }
+    }
+
+    /// Show confirmation dialog for squash.
+    pub fn show_squash_confirm(&mut self) {
+        if let Some(entry) = self.selected_entry() {
+            self.modal = ModalState::Confirm(PendingAction::Squash {
+                change_id: entry.change_id.clone(),
+                description: entry.description.clone(),
+            });
+        }
+    }
+
+    /// Show confirmation dialog for git push.
+    pub fn show_push_confirm(&mut self) {
+        self.modal = ModalState::Confirm(PendingAction::GitPush);
+    }
+
+    /// Show confirmation dialog for undo.
+    pub fn show_undo_confirm(&mut self) {
+        self.modal = ModalState::Confirm(PendingAction::Undo);
+    }
+
+    /// Confirm and execute the pending action.
+    pub fn confirm_action(&mut self) -> Result<(), XorcistError> {
+        let action = match std::mem::take(&mut self.modal) {
+            ModalState::Confirm(action) => action,
+            ModalState::None => return Ok(()),
+        };
+
+        match action {
+            PendingAction::Abandon { change_id, .. } => {
+                let result = self.runner.execute_abandon(&change_id);
+                self.handle_command_result(result);
+                self.refresh_log()?;
+            }
+            PendingAction::Squash { change_id, .. } => {
+                let result = self.runner.execute_squash(&change_id);
+                self.handle_command_result(result);
+                self.refresh_log()?;
+            }
+            PendingAction::GitPush => {
+                let result = self.runner.execute_git_push();
+                self.handle_command_result(result);
+                self.refresh_log()?;
+            }
+            PendingAction::Undo => {
+                let result = self.runner.execute_undo();
+                self.handle_command_result(result);
+                self.refresh_log()?;
+            }
+        }
+
+        Ok(())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Direct command execution (no confirmation)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Execute `jj git fetch`.
+    pub fn execute_git_fetch(&mut self) -> Result<(), XorcistError> {
+        let result = self.runner.execute_git_fetch();
+        self.handle_command_result(result);
+        self.refresh_log()?;
+        Ok(())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Input mode management
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Start input mode for text entry.
+    pub fn start_input_mode(&mut self, mode: InputMode) {
+        self.input_mode = Some(mode);
+        self.input.reset();
+    }
+
+    /// Cancel input mode without executing.
+    pub fn cancel_input_mode(&mut self) {
+        self.input_mode = None;
+        self.input.reset();
+    }
+
+    /// Check if currently in input mode.
+    pub fn is_input_mode(&self) -> bool {
+        self.input_mode.is_some()
+    }
+
+    /// Submit the current input and execute the corresponding command.
+    pub fn submit_input(&mut self) -> Result<(), XorcistError> {
+        let Some(mode) = self.input_mode.take() else {
+            return Ok(());
+        };
+        let value = self.input.value().to_string();
+        self.input.reset();
+
+        match mode {
+            InputMode::Describe => self.execute_describe(&value)?,
+            InputMode::BookmarkSet => self.execute_bookmark_set(&value)?,
+            InputMode::NewWithMessage => self.execute_new_with_message(&value)?,
+        }
+        Ok(())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Command execution (Phase1 commands)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Execute `jj new` on the selected revision.
+    pub fn execute_new(&mut self) -> Result<(), XorcistError> {
+        let Some(entry) = self.selected_entry() else {
+            return Ok(());
+        };
+        let change_id = entry.change_id.clone();
+        let result = self.runner.execute_new(&change_id);
+        self.handle_command_result(result);
+        self.refresh_log()?;
+        Ok(())
+    }
+
+    /// Execute `jj new -m` with the given message.
+    pub fn execute_new_with_message(&mut self, message: &str) -> Result<(), XorcistError> {
+        let Some(entry) = self.selected_entry() else {
+            return Ok(());
+        };
+        let change_id = entry.change_id.clone();
+        let result = if message.is_empty() {
+            self.runner.execute_new(&change_id)
+        } else {
+            self.runner.execute_new_with_message(&change_id, message)
+        };
+        self.handle_command_result(result);
+        self.refresh_log()?;
+        Ok(())
+    }
+
+    /// Execute `jj edit` on the selected revision.
+    pub fn execute_edit(&mut self) -> Result<(), XorcistError> {
+        let Some(entry) = self.selected_entry() else {
+            return Ok(());
+        };
+        let change_id = entry.change_id.clone();
+        let result = self.runner.execute_edit(&change_id);
+        self.handle_command_result(result);
+        self.refresh_log()?;
+        Ok(())
+    }
+
+    /// Execute `jj describe -m` on the selected revision.
+    pub fn execute_describe(&mut self, message: &str) -> Result<(), XorcistError> {
+        let Some(entry) = self.selected_entry() else {
+            return Ok(());
+        };
+        let change_id = entry.change_id.clone();
+        let result = self.runner.execute_describe(&change_id, message);
+        self.handle_command_result(result);
+        self.refresh_log()?;
+        Ok(())
+    }
+
+    /// Execute `jj bookmark set` on the selected revision.
+    pub fn execute_bookmark_set(&mut self, name: &str) -> Result<(), XorcistError> {
+        if name.is_empty() {
+            self.last_command_result = Some(CommandResult {
+                command: "jj bookmark set".to_string(),
+                success: false,
+                message: "Bookmark name cannot be empty".to_string(),
+            });
+            return Ok(());
+        }
+        let Some(entry) = self.selected_entry() else {
+            return Ok(());
+        };
+        let change_id = entry.change_id.clone();
+        let result = self.runner.execute_bookmark_set(name, &change_id);
+        self.handle_command_result(result);
+        self.refresh_log()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -166,7 +503,11 @@ mod tests {
     fn make_entry(id: &str) -> LogEntry {
         LogEntry {
             change_id: id.to_string(),
+            change_id_prefix: id.to_string(),
+            change_id_rest: String::new(),
             commit_id: format!("commit_{id}"),
+            commit_id_prefix: format!("commit_{id}"),
+            commit_id_rest: String::new(),
             author: "Test".to_string(),
             timestamp: "now".to_string(),
             description: format!("Entry {id}"),
@@ -259,8 +600,12 @@ mod tests {
         app.view = View::Detail;
         app.detail_state = Some(DetailState {
             show_output: ShowOutput {
-                change_id: "abc".to_string(),
-                commit_id: "def".to_string(),
+                change_id: "abc123".to_string(),
+                change_id_prefix: "abc".to_string(),
+                change_id_rest: "123".to_string(),
+                commit_id: "def456".to_string(),
+                commit_id_prefix: "def".to_string(),
+                commit_id_rest: "456".to_string(),
                 author: "Test".to_string(),
                 timestamp: "now".to_string(),
                 description: "Test".to_string(),
@@ -281,8 +626,12 @@ mod tests {
         let mut app = App::new(vec![], "/repo".to_string(), make_runner());
         app.detail_state = Some(DetailState {
             show_output: ShowOutput {
-                change_id: "abc".to_string(),
-                commit_id: "def".to_string(),
+                change_id: "abc123".to_string(),
+                change_id_prefix: "abc".to_string(),
+                change_id_rest: "123".to_string(),
+                commit_id: "def456".to_string(),
+                commit_id_prefix: "def".to_string(),
+                commit_id_rest: "456".to_string(),
                 author: "Test".to_string(),
                 timestamp: "now".to_string(),
                 description: "Test".to_string(),
@@ -309,8 +658,12 @@ mod tests {
         let mut app = App::new(vec![], "/repo".to_string(), make_runner());
         app.detail_state = Some(DetailState {
             show_output: ShowOutput {
-                change_id: "abc".to_string(),
-                commit_id: "def".to_string(),
+                change_id: "abc123".to_string(),
+                change_id_prefix: "abc".to_string(),
+                change_id_rest: "123".to_string(),
+                commit_id: "def456".to_string(),
+                commit_id_prefix: "def".to_string(),
+                commit_id_rest: "456".to_string(),
                 author: "Test".to_string(),
                 timestamp: "now".to_string(),
                 description: "Test".to_string(),

@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
+use crate::app::CommandResult;
 use crate::error::XorcistError;
 
 /// Runner for executing jj commands.
@@ -61,6 +62,103 @@ impl JjRunner {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase1 command execution methods
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Execute `jj new` to create a new change.
+    pub fn execute_new(&self, parent: &str) -> Result<CommandResult, XorcistError> {
+        let args = ["new", parent];
+        self.run_command(&args, "jj new")
+    }
+
+    /// Execute `jj new -m` to create a new change with a message.
+    pub fn execute_new_with_message(
+        &self,
+        parent: &str,
+        message: &str,
+    ) -> Result<CommandResult, XorcistError> {
+        let args = ["new", parent, "-m", message];
+        self.run_command(&args, "jj new -m")
+    }
+
+    /// Execute `jj edit` to edit a revision.
+    pub fn execute_edit(&self, revision: &str) -> Result<CommandResult, XorcistError> {
+        let args = ["edit", revision];
+        self.run_command(&args, "jj edit")
+    }
+
+    /// Execute `jj describe -m` to set a commit message.
+    pub fn execute_describe(
+        &self,
+        revision: &str,
+        message: &str,
+    ) -> Result<CommandResult, XorcistError> {
+        let args = ["describe", revision, "-m", message];
+        self.run_command(&args, "jj describe")
+    }
+
+    /// Execute `jj bookmark set` to set a bookmark.
+    pub fn execute_bookmark_set(
+        &self,
+        name: &str,
+        revision: &str,
+    ) -> Result<CommandResult, XorcistError> {
+        let args = ["bookmark", "set", name, "-r", revision];
+        self.run_command(&args, "jj bookmark set")
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase2 command execution methods
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Execute `jj abandon` to abandon a change.
+    pub fn execute_abandon(&self, revision: &str) -> Result<CommandResult, XorcistError> {
+        let args = ["abandon", revision];
+        self.run_command(&args, "jj abandon")
+    }
+
+    /// Execute `jj squash` to squash a change into its parent.
+    pub fn execute_squash(&self, revision: &str) -> Result<CommandResult, XorcistError> {
+        let args = ["squash", "-r", revision];
+        self.run_command(&args, "jj squash")
+    }
+
+    /// Execute `jj git fetch` to fetch from remote.
+    pub fn execute_git_fetch(&self) -> Result<CommandResult, XorcistError> {
+        let args = ["git", "fetch"];
+        self.run_command(&args, "jj git fetch")
+    }
+
+    /// Execute `jj git push` to push to remote.
+    pub fn execute_git_push(&self) -> Result<CommandResult, XorcistError> {
+        let args = ["git", "push"];
+        self.run_command(&args, "jj git push")
+    }
+
+    /// Execute `jj undo` to undo the last operation.
+    pub fn execute_undo(&self) -> Result<CommandResult, XorcistError> {
+        let args = ["undo"];
+        self.run_command(&args, "jj undo")
+    }
+
+    /// Run a jj command and return a CommandResult.
+    fn run_command(&self, args: &[&str], cmd_name: &str) -> Result<CommandResult, XorcistError> {
+        let output = self.execute(args)?;
+        let success = output.status.success();
+        let message = if success {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        } else {
+            String::from_utf8_lossy(&output.stderr).trim().to_string()
+        };
+
+        Ok(CommandResult {
+            command: cmd_name.to_string(),
+            success,
+            message,
+        })
     }
 }
 

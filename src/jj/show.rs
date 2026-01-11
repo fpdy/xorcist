@@ -8,8 +8,17 @@ use crate::jj::runner::JjRunner;
 pub struct ShowOutput {
     /// Change ID (full).
     pub change_id: String,
+    /// Shortest unique prefix of change ID.
+    pub change_id_prefix: String,
+    /// Rest of change ID after the unique prefix.
+    pub change_id_rest: String,
     /// Commit ID (full).
+    #[allow(dead_code)] // Will be used for copy-to-clipboard etc.
     pub commit_id: String,
+    /// Shortest unique prefix of commit ID.
+    pub commit_id_prefix: String,
+    /// Rest of commit ID after the unique prefix.
+    pub commit_id_rest: String,
     /// Author information.
     pub author: String,
     /// Committer timestamp.
@@ -43,7 +52,8 @@ pub enum DiffStatus {
 
 /// Template for machine-readable show output.
 /// Fields are separated by \x00 (null byte) for reliable parsing.
-const SHOW_TEMPLATE: &str = r#"change_id ++ "\x00" ++ commit_id ++ "\x00" ++ author.name() ++ "\x00" ++ committer.timestamp().ago() ++ "\x00" ++ description ++ "\x00" ++ bookmarks.join(",") ++ "\n""#;
+/// Uses shortest() to get unique prefix for change_id and commit_id.
+const SHOW_TEMPLATE: &str = r#"change_id.shortest(4).prefix() ++ "\x00" ++ change_id.shortest(4).rest() ++ "\x00" ++ commit_id.shortest(4).prefix() ++ "\x00" ++ commit_id.shortest(4).rest() ++ "\x00" ++ author.name() ++ "\x00" ++ committer.timestamp().ago() ++ "\x00" ++ description ++ "\x00" ++ bookmarks.join(",") ++ "\n""#;
 
 /// Fetch show output for a revision.
 pub fn fetch_show(runner: &JjRunner, revision: &str) -> Result<ShowOutput, XorcistError> {
@@ -58,7 +68,11 @@ pub fn fetch_show(runner: &JjRunner, revision: &str) -> Result<ShowOutput, Xorci
 
     Ok(ShowOutput {
         change_id: meta.change_id,
+        change_id_prefix: meta.change_id_prefix,
+        change_id_rest: meta.change_id_rest,
         commit_id: meta.commit_id,
+        commit_id_prefix: meta.commit_id_prefix,
+        commit_id_rest: meta.commit_id_rest,
         author: meta.author,
         timestamp: meta.timestamp,
         description: meta.description,
@@ -70,7 +84,11 @@ pub fn fetch_show(runner: &JjRunner, revision: &str) -> Result<ShowOutput, Xorci
 /// Parsed metadata from jj log output.
 struct ShowMeta {
     change_id: String,
+    change_id_prefix: String,
+    change_id_rest: String,
     commit_id: String,
+    commit_id_prefix: String,
+    commit_id_rest: String,
     author: String,
     timestamp: String,
     description: String,
@@ -79,7 +97,7 @@ struct ShowMeta {
 
 /// Parse metadata from jj log output.
 ///
-/// The output format is: change_id\x00commit_id\x00author\x00timestamp\x00description\x00bookmarks\n
+/// The output format is: change_prefix\x00change_rest\x00commit_prefix\x00commit_rest\x00author\x00timestamp\x00description\x00bookmarks\n
 /// Note: description may contain newlines, so we split by \x00 on the entire output
 /// rather than processing line by line.
 fn parse_show_meta(output: &str) -> Result<ShowMeta, XorcistError> {
@@ -87,27 +105,36 @@ fn parse_show_meta(output: &str) -> Result<ShowMeta, XorcistError> {
     let output = output.trim_end_matches('\n');
     let parts: Vec<&str> = output.split('\x00').collect();
 
-    if parts.len() < 6 {
+    if parts.len() < 8 {
         return Err(XorcistError::JjError(format!(
-            "unexpected show output format: expected 6 fields, got {}",
+            "unexpected show output format: expected 8 fields, got {}",
             parts.len()
         )));
     }
 
-    let bookmarks = if parts[5].is_empty() {
+    let bookmarks = if parts[7].is_empty() {
         Vec::new()
     } else {
-        parts[5].split(',').map(String::from).collect()
+        parts[7].split(',').map(String::from).collect()
     };
 
     // Trim trailing newline from description (jj adds one at the end)
-    let description = parts[4].trim_end_matches('\n').to_string();
+    let description = parts[6].trim_end_matches('\n').to_string();
+
+    let change_id_prefix = parts[0].to_string();
+    let change_id_rest = parts[1].to_string();
+    let commit_id_prefix = parts[2].to_string();
+    let commit_id_rest = parts[3].to_string();
 
     Ok(ShowMeta {
-        change_id: parts[0].to_string(),
-        commit_id: parts[1].to_string(),
-        author: parts[2].to_string(),
-        timestamp: parts[3].to_string(),
+        change_id: format!("{change_id_prefix}{change_id_rest}"),
+        change_id_prefix,
+        change_id_rest,
+        commit_id: format!("{commit_id_prefix}{commit_id_rest}"),
+        commit_id_prefix,
+        commit_id_rest,
+        author: parts[4].to_string(),
+        timestamp: parts[5].to_string(),
         description,
         bookmarks,
     })
@@ -147,10 +174,16 @@ mod tests {
 
     #[test]
     fn test_parse_show_meta() {
-        let output = "abc123\x00def456\x00Alice\x002 hours ago\x00Add feature\x00main,dev\n";
+        // Format: change_prefix\0change_rest\0commit_prefix\0commit_rest\0author\0timestamp\0description\0bookmarks
+        let output =
+            "abc\x00123\x00def\x00456\x00Alice\x002 hours ago\x00Add feature\x00main,dev\n";
         let result = parse_show_meta(output).unwrap();
 
+        assert_eq!(result.change_id_prefix, "abc");
+        assert_eq!(result.change_id_rest, "123");
         assert_eq!(result.change_id, "abc123");
+        assert_eq!(result.commit_id_prefix, "def");
+        assert_eq!(result.commit_id_rest, "456");
         assert_eq!(result.commit_id, "def456");
         assert_eq!(result.author, "Alice");
         assert_eq!(result.timestamp, "2 hours ago");
@@ -160,7 +193,7 @@ mod tests {
 
     #[test]
     fn test_parse_show_meta_no_bookmarks() {
-        let output = "abc123\x00def456\x00Alice\x002 hours ago\x00Add feature\x00\n";
+        let output = "abc\x00123\x00def\x00456\x00Alice\x002 hours ago\x00Add feature\x00\n";
         let result = parse_show_meta(output).unwrap();
 
         assert!(result.bookmarks.is_empty());
@@ -171,7 +204,7 @@ mod tests {
         // In jj template output, newlines within description are preserved.
         // Our parser handles multi-line descriptions correctly.
         let output =
-            "abc123\x00def456\x00Alice\x002 hours ago\x00First line\nSecond line\x00main\n";
+            "abc\x00123\x00def\x00456\x00Alice\x002 hours ago\x00First line\nSecond line\x00main\n";
         let result = parse_show_meta(output).unwrap();
 
         assert_eq!(result.description, "First line\nSecond line");
@@ -181,11 +214,24 @@ mod tests {
     #[test]
     fn test_parse_show_meta_description_with_trailing_newline() {
         // jj's description often has a trailing newline, which should be trimmed
-        let output = "abc123\x00def456\x00Alice\x002 hours ago\x00Add feature\n\x00main\n";
+        let output = "abc\x00123\x00def\x00456\x00Alice\x002 hours ago\x00Add feature\n\x00main\n";
         let result = parse_show_meta(output).unwrap();
 
         assert_eq!(result.description, "Add feature");
         assert_eq!(result.bookmarks, vec!["main"]);
+    }
+
+    #[test]
+    fn test_parse_show_meta_empty_rest() {
+        // When the entire ID is the unique prefix, rest is empty
+        let output = "abcd\x00\x00defg\x00\x00Alice\x00now\x00Test\x00\n";
+        let result = parse_show_meta(output).unwrap();
+
+        assert_eq!(result.change_id_prefix, "abcd");
+        assert!(result.change_id_rest.is_empty());
+        assert_eq!(result.change_id, "abcd");
+        assert_eq!(result.commit_id_prefix, "defg");
+        assert!(result.commit_id_rest.is_empty());
     }
 
     #[test]

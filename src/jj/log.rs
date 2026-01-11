@@ -8,9 +8,19 @@ use crate::jj::runner::JjRunner;
 pub struct LogEntry {
     /// Short change ID (e.g., "abc123").
     pub change_id: String,
+    /// Shortest unique prefix of change ID.
+    pub change_id_prefix: String,
+    /// Rest of change ID after the unique prefix.
+    pub change_id_rest: String,
     /// Short commit ID.
     #[allow(dead_code)] // Will be used for commit details view
     pub commit_id: String,
+    /// Shortest unique prefix of commit ID.
+    #[allow(dead_code)]
+    pub commit_id_prefix: String,
+    /// Rest of commit ID after the unique prefix.
+    #[allow(dead_code)]
+    pub commit_id_rest: String,
     /// Author name.
     pub author: String,
     /// Relative timestamp (e.g., "2 hours ago").
@@ -42,7 +52,8 @@ impl LogEntry {
 
 /// Template for machine-readable log output.
 /// Fields are separated by \x00 (null byte) for reliable parsing.
-const LOG_TEMPLATE: &str = r#"change_id.short() ++ "\x00" ++ commit_id.short() ++ "\x00" ++ author.name() ++ "\x00" ++ committer.timestamp().ago() ++ "\x00" ++ coalesce(description.first_line(), "(no description)") ++ "\x00" ++ current_working_copy ++ "\x00" ++ immutable ++ "\x00" ++ empty ++ "\x00" ++ bookmarks.join(",") ++ "\n""#;
+/// Uses shortest() to get unique prefix for change_id and commit_id.
+const LOG_TEMPLATE: &str = r#"change_id.shortest(4).prefix() ++ "\x00" ++ change_id.shortest(4).rest() ++ "\x00" ++ commit_id.shortest(4).prefix() ++ "\x00" ++ commit_id.shortest(4).rest() ++ "\x00" ++ author.name() ++ "\x00" ++ committer.timestamp().ago() ++ "\x00" ++ coalesce(description.first_line(), "(no description)") ++ "\x00" ++ current_working_copy ++ "\x00" ++ immutable ++ "\x00" ++ empty ++ "\x00" ++ bookmarks.join(",") ++ "\n""#;
 
 /// Fetch log entries from jj.
 pub fn fetch_log(runner: &JjRunner, limit: Option<usize>) -> Result<Vec<LogEntry>, XorcistError> {
@@ -72,25 +83,34 @@ fn parse_log_output(output: &str) -> Vec<LogEntry> {
 /// Parse a single log line.
 fn parse_log_line(line: &str) -> Option<LogEntry> {
     let parts: Vec<&str> = line.split('\x00').collect();
-    if parts.len() < 9 {
+    if parts.len() < 11 {
         return None;
     }
 
-    let bookmarks = if parts[8].is_empty() {
+    let bookmarks = if parts[10].is_empty() {
         Vec::new()
     } else {
-        parts[8].split(',').map(String::from).collect()
+        parts[10].split(',').map(String::from).collect()
     };
 
+    let change_id_prefix = parts[0].to_string();
+    let change_id_rest = parts[1].to_string();
+    let commit_id_prefix = parts[2].to_string();
+    let commit_id_rest = parts[3].to_string();
+
     Some(LogEntry {
-        change_id: parts[0].to_string(),
-        commit_id: parts[1].to_string(),
-        author: parts[2].to_string(),
-        timestamp: parts[3].to_string(),
-        description: parts[4].to_string(),
-        is_working_copy: parts[5] == "true",
-        is_immutable: parts[6] == "true",
-        is_empty: parts[7] == "true",
+        change_id: format!("{change_id_prefix}{change_id_rest}"),
+        change_id_prefix,
+        change_id_rest,
+        commit_id: format!("{commit_id_prefix}{commit_id_rest}"),
+        commit_id_prefix,
+        commit_id_rest,
+        author: parts[4].to_string(),
+        timestamp: parts[5].to_string(),
+        description: parts[6].to_string(),
+        is_working_copy: parts[7] == "true",
+        is_immutable: parts[8] == "true",
+        is_empty: parts[9] == "true",
         bookmarks,
     })
 }
@@ -101,10 +121,15 @@ mod tests {
 
     #[test]
     fn test_parse_log_line() {
-        let line = "abc123\x00def456\x00Alice\x002 hours ago\x00Add feature\x00true\x00false\x00false\x00main,dev";
+        // Format: change_prefix\0change_rest\0commit_prefix\0commit_rest\0author\0timestamp\0description\0working_copy\0immutable\0empty\0bookmarks
+        let line = "abc\x00123\x00def\x00456\x00Alice\x002 hours ago\x00Add feature\x00true\x00false\x00false\x00main,dev";
         let entry = parse_log_line(line).unwrap();
 
+        assert_eq!(entry.change_id_prefix, "abc");
+        assert_eq!(entry.change_id_rest, "123");
         assert_eq!(entry.change_id, "abc123");
+        assert_eq!(entry.commit_id_prefix, "def");
+        assert_eq!(entry.commit_id_rest, "456");
         assert_eq!(entry.commit_id, "def456");
         assert_eq!(entry.author, "Alice");
         assert_eq!(entry.timestamp, "2 hours ago");
@@ -117,8 +142,7 @@ mod tests {
 
     #[test]
     fn test_parse_log_line_no_bookmarks() {
-        let line =
-            "abc123\x00def456\x00Alice\x002 hours ago\x00Add feature\x00false\x00true\x00false\x00";
+        let line = "abc\x00123\x00def\x00456\x00Alice\x002 hours ago\x00Add feature\x00false\x00true\x00false\x00";
         let entry = parse_log_line(line).unwrap();
 
         assert!(entry.bookmarks.is_empty());
@@ -127,10 +151,27 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_log_line_empty_rest() {
+        // When the entire ID is the unique prefix, rest is empty
+        let line = "abcd\x00\x00defg\x00\x00Alice\x00now\x00Test\x00false\x00false\x00false\x00";
+        let entry = parse_log_line(line).unwrap();
+
+        assert_eq!(entry.change_id_prefix, "abcd");
+        assert!(entry.change_id_rest.is_empty());
+        assert_eq!(entry.change_id, "abcd");
+        assert_eq!(entry.commit_id_prefix, "defg");
+        assert!(entry.commit_id_rest.is_empty());
+    }
+
+    #[test]
     fn test_graph_symbol() {
         let mut entry = LogEntry {
-            change_id: "abc".to_string(),
-            commit_id: "def".to_string(),
+            change_id: "abc123".to_string(),
+            change_id_prefix: "abc".to_string(),
+            change_id_rest: "123".to_string(),
+            commit_id: "def456".to_string(),
+            commit_id_prefix: "def".to_string(),
+            commit_id_rest: "456".to_string(),
             author: "Alice".to_string(),
             timestamp: "now".to_string(),
             description: "test".to_string(),
@@ -152,12 +193,15 @@ mod tests {
 
     #[test]
     fn test_parse_log_output() {
-        let output = "abc\x00def\x00Alice\x00now\x00First\x00true\x00false\x00false\x00\nghi\x00jkl\x00Bob\x001h ago\x00Second\x00false\x00false\x00false\x00main\n";
+        // Format: change_prefix\0change_rest\0commit_prefix\0commit_rest\0author\0timestamp\0description\0working_copy\0immutable\0empty\0bookmarks
+        let output = "abc\x00123\x00def\x00456\x00Alice\x00now\x00First\x00true\x00false\x00false\x00\nghi\x00789\x00jkl\x00012\x00Bob\x001h ago\x00Second\x00false\x00false\x00false\x00main\n";
         let entries = parse_log_output(output);
 
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].change_id, "abc");
-        assert_eq!(entries[1].change_id, "ghi");
+        assert_eq!(entries[0].change_id_prefix, "abc");
+        assert_eq!(entries[0].change_id_rest, "123");
+        assert_eq!(entries[0].change_id, "abc123");
+        assert_eq!(entries[1].change_id, "ghi789");
         assert_eq!(entries[1].bookmarks, vec!["main"]);
     }
 }

@@ -2,7 +2,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout, Rect},
+    layout::{Constraint, Flex, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
@@ -11,7 +11,7 @@ use ratatui::{
     },
 };
 
-use crate::app::{App, View};
+use crate::app::{App, InputMode, ModalState, View};
 use crate::jj::{DiffStatus, LogEntry, ShowOutput};
 
 /// Render the entire UI based on current view.
@@ -21,9 +21,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::Detail => render_detail_view(frame, app),
     }
 
+    // Render input overlay if in input mode
+    if app.is_input_mode() {
+        render_input_overlay(frame, app);
+    }
+
     // Render help modal on top if visible
     if app.show_help {
         render_help(frame);
+    }
+
+    // Render modal dialog if open
+    if app.is_modal_open() {
+        render_modal_overlay(frame, app);
     }
 }
 
@@ -38,7 +48,7 @@ fn render_log_view(frame: &mut Frame, app: &App) {
 
     render_title_bar(frame, chunks[0], app);
     render_log_list(frame, chunks[1], app);
-    render_log_status_bar(frame, chunks[2]);
+    render_log_status_bar(frame, chunks[2], app);
 }
 
 /// Render the title bar.
@@ -84,7 +94,15 @@ fn create_list_item(entry: &LogEntry) -> ListItem<'_> {
 
     let mut spans = vec![
         Span::styled(format!("{symbol} "), symbol_style),
-        Span::styled(&entry.change_id, Style::default().fg(Color::Magenta)),
+        // Shortest unique prefix: bright magenta + bold
+        Span::styled(
+            &entry.change_id_prefix,
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
+        // Rest of change ID: dim/dark gray
+        Span::styled(&entry.change_id_rest, Style::default().fg(Color::DarkGray)),
         Span::raw(" "),
     ];
 
@@ -120,11 +138,41 @@ fn create_list_item(entry: &LogEntry) -> ListItem<'_> {
 }
 
 /// Render the status bar for log view.
-fn render_log_status_bar(frame: &mut Frame, area: Rect) {
-    let help_text = " j/k: navigate  g/G: top/bottom  Enter: show  q: quit  ?: help ";
-    let status_bar =
-        Paragraph::new(help_text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
+fn render_log_status_bar(frame: &mut Frame, area: Rect, app: &App) {
+    // Show command result if available, otherwise show help text
+    let (text, style) = if let Some(result) = &app.last_command_result {
+        let color = if result.success {
+            Color::Green
+        } else {
+            Color::Red
+        };
+        let prefix = if result.success { "✓" } else { "✗" };
+        let msg = format!(
+            " {prefix} {} ",
+            truncate_message(&result.message, area.width as usize - 4)
+        );
+        (msg, Style::default().bg(Color::DarkGray).fg(color))
+    } else {
+        let help = " n: new  e: edit  d: describe  b: bookmark  Enter: show  q: quit  ?: help ";
+        (
+            help.to_string(),
+            Style::default().bg(Color::DarkGray).fg(Color::White),
+        )
+    };
+
+    let status_bar = Paragraph::new(text).style(style);
     frame.render_widget(status_bar, area);
+}
+
+/// Truncate a message to fit within the given width.
+fn truncate_message(msg: &str, max_width: usize) -> String {
+    // Take only the first line
+    let first_line = msg.lines().next().unwrap_or(msg);
+    if first_line.len() <= max_width {
+        first_line.to_string()
+    } else {
+        format!("{}...", &first_line[..max_width.saturating_sub(3)])
+    }
 }
 
 /// Render the detail view.
@@ -199,14 +247,33 @@ fn build_detail_lines(output: &ShowOutput) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(vec![
             Span::styled("Change ID: ", Style::default().bold()),
+            // Shortest unique prefix: bright magenta + bold
             Span::styled(
-                output.change_id.clone(),
-                Style::default().fg(Color::Magenta),
+                output.change_id_prefix.clone(),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            // Rest of change ID: dim/dark gray
+            Span::styled(
+                output.change_id_rest.clone(),
+                Style::default().fg(Color::DarkGray),
             ),
         ]),
         Line::from(vec![
             Span::styled("Commit ID: ", Style::default().bold()),
-            Span::styled(output.commit_id.clone(), Style::default().fg(Color::Yellow)),
+            // Shortest unique prefix: bright yellow + bold
+            Span::styled(
+                output.commit_id_prefix.clone(),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            // Rest of commit ID: dim/dark gray
+            Span::styled(
+                output.commit_id_rest.clone(),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Author:    ", Style::default().bold()),
@@ -359,4 +426,116 @@ fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     let [area] = vertical.areas(area);
     let [area] = horizontal.areas(area);
     area
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Modal overlay (confirmation dialogs)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Render the modal overlay for confirmation dialogs.
+fn render_modal_overlay(frame: &mut Frame, app: &App) {
+    let ModalState::Confirm(action) = &app.modal else {
+        return;
+    };
+
+    let message = action.confirm_message();
+
+    // Calculate centered area for modal box
+    let area = frame.area();
+    let width = (message.len() as u16 + 6).max(30).min(area.width - 4);
+    let height = 5;
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let modal_area = Rect::new(x, y, width, height);
+
+    // Clear the area behind the modal box
+    frame.render_widget(Clear, modal_area);
+
+    // Build the modal box
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(" Confirm ")
+        .title_style(Style::default().fg(Color::Yellow).bold());
+
+    let inner_area = block.inner(modal_area);
+    frame.render_widget(block, modal_area);
+
+    // Split inner area for message and buttons
+    let chunks = Layout::vertical([
+        Constraint::Length(1), // Message
+        Constraint::Length(1), // Spacing
+        Constraint::Length(1), // Buttons
+    ])
+    .split(inner_area);
+
+    // Render message (centered)
+    let message_paragraph = Paragraph::new(message).alignment(ratatui::layout::Alignment::Center);
+    frame.render_widget(message_paragraph, chunks[0]);
+
+    // Render buttons
+    let buttons = Line::from(vec![
+        Span::styled(" [Y]es ", Style::default().fg(Color::Green).bold()),
+        Span::raw("  "),
+        Span::styled(" [N]o ", Style::default().fg(Color::Red).bold()),
+    ]);
+    let buttons_paragraph = Paragraph::new(buttons).alignment(ratatui::layout::Alignment::Center);
+    frame.render_widget(buttons_paragraph, chunks[2]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Input overlay
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Render the input overlay for text entry.
+fn render_input_overlay(frame: &mut Frame, app: &App) {
+    let Some(mode) = &app.input_mode else {
+        return;
+    };
+
+    // Calculate centered area for input box
+    let area = frame.area();
+    let width = (area.width * 60 / 100).max(40).min(area.width - 4);
+    let height = 3;
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let input_area = Rect::new(x, y, width, height);
+
+    // Clear the area behind the input box
+    frame.render_widget(Clear, input_area);
+
+    // Build the input box
+    let title = match mode {
+        InputMode::Describe => " Describe ",
+        InputMode::BookmarkSet => " Set Bookmark ",
+        InputMode::NewWithMessage => " New Change ",
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(title)
+        .title_style(Style::default().fg(Color::Cyan).bold());
+
+    let inner_area = block.inner(input_area);
+    frame.render_widget(block, input_area);
+
+    // Render the input text
+    let input_value = app.input.value();
+    let display_text = if input_value.is_empty() {
+        Span::styled(mode.placeholder(), Style::default().fg(Color::DarkGray))
+    } else {
+        Span::raw(input_value)
+    };
+
+    // Calculate scroll for long input
+    let scroll = app.input.visual_scroll(inner_area.width as usize);
+    let input_paragraph = Paragraph::new(Line::from(display_text)).scroll((0, scroll as u16));
+    frame.render_widget(input_paragraph, inner_area);
+
+    // Set cursor position
+    if !input_value.is_empty() || app.is_input_mode() {
+        let cursor_x = app.input.visual_cursor().saturating_sub(scroll);
+        frame.set_cursor_position(Position::new(inner_area.x + cursor_x as u16, inner_area.y));
+    }
 }
