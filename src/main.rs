@@ -8,9 +8,9 @@ mod ui;
 use std::env;
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use app::App;
+use app::{App, View};
 use error::XorcistError;
 use jj::{JjRunner, fetch_log, find_jj_repo};
 
@@ -37,7 +37,7 @@ fn main() -> Result<()> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| repo.root.to_string_lossy().to_string());
 
-    let app = App::new(entries, repo_root_display);
+    let app = App::new(entries, repo_root_display, runner);
 
     // Run TUI
     run_tui(app)
@@ -66,35 +66,9 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
         if let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => {
-                    app.quit();
-                }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    app.select_next();
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    app.select_previous();
-                }
-                KeyCode::Char('g') | KeyCode::Home => {
-                    app.select_first();
-                }
-                KeyCode::Char('G') | KeyCode::End => {
-                    app.select_last();
-                }
-                KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                    app.page_down(10);
-                }
-                KeyCode::Char('u') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                    app.page_up(10);
-                }
-                KeyCode::PageDown => {
-                    app.page_down(10);
-                }
-                KeyCode::PageUp => {
-                    app.page_up(10);
-                }
-                _ => {}
+            match app.view {
+                View::Log => handle_log_keys(app, key)?,
+                View::Detail => handle_detail_keys(app, key),
             }
         }
 
@@ -104,4 +78,70 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
     }
 
     Ok(())
+}
+
+/// Handle key events in log view.
+fn handle_log_keys(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Esc => {
+            app.quit();
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.select_next();
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.select_previous();
+        }
+        KeyCode::Char('g') | KeyCode::Home => {
+            app.select_first();
+        }
+        KeyCode::Char('G') | KeyCode::End => {
+            app.select_last();
+        }
+        KeyCode::Enter => {
+            app.open_detail().context("failed to open detail view")?;
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.page_down(10);
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.page_up(10);
+        }
+        KeyCode::PageDown => {
+            app.page_down(10);
+        }
+        KeyCode::PageUp => {
+            app.page_up(10);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Handle key events in detail view.
+fn handle_detail_keys(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Esc => {
+            app.close_detail();
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.detail_scroll_down(1);
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.detail_scroll_up(1);
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.detail_scroll_down(10);
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.detail_scroll_up(10);
+        }
+        KeyCode::PageDown => {
+            app.detail_scroll_down(10);
+        }
+        KeyCode::PageUp => {
+            app.detail_scroll_up(10);
+        }
+        _ => {}
+    }
 }
