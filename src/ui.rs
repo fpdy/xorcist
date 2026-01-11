@@ -2,12 +2,12 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState,
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState,
     },
 };
 
@@ -19,6 +19,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     match app.view {
         View::Log => render_log_view(frame, app),
         View::Detail => render_detail_view(frame, app),
+    }
+
+    // Render help modal on top if visible
+    if app.show_help {
+        render_help(frame);
     }
 }
 
@@ -116,7 +121,7 @@ fn create_list_item(entry: &LogEntry) -> ListItem<'_> {
 
 /// Render the status bar for log view.
 fn render_log_status_bar(frame: &mut Frame, area: Rect) {
-    let help_text = " j/k: navigate  g/G: top/bottom  Enter: show  q: quit ";
+    let help_text = " j/k: navigate  g/G: top/bottom  Enter: show  q: quit  ?: help ";
     let status_bar =
         Paragraph::new(help_text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
     frame.render_widget(status_bar, area);
@@ -273,8 +278,85 @@ fn build_detail_lines(output: &ShowOutput) -> Vec<Line<'static>> {
 
 /// Render the status bar for detail view.
 fn render_detail_status_bar(frame: &mut Frame, area: Rect) {
-    let help_text = " j/k: scroll  Ctrl+d/u: page  q/Esc: back ";
+    let help_text = " j/k: scroll  Ctrl+d/u: page  q/Esc: back  ?: help ";
     let status_bar =
         Paragraph::new(help_text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
     frame.render_widget(status_bar, area);
+}
+
+/// Render the help modal.
+fn render_help(frame: &mut Frame) {
+    let area = centered_rect(frame.area(), 50, 60);
+
+    // Clear the area first to avoid background bleed-through
+    frame.render_widget(Clear, area);
+
+    let help_lines = vec![
+        Line::styled(
+            "─── Keyboard Shortcuts ───",
+            Style::default().fg(Color::Cyan).bold(),
+        ),
+        Line::raw(""),
+        Line::styled("  Navigation", Style::default().bold()),
+        Line::from(vec![
+            Span::styled("  j / ↓      ", Style::default().fg(Color::Yellow)),
+            Span::raw("Move down"),
+        ]),
+        Line::from(vec![
+            Span::styled("  k / ↑      ", Style::default().fg(Color::Yellow)),
+            Span::raw("Move up"),
+        ]),
+        Line::from(vec![
+            Span::styled("  g / Home   ", Style::default().fg(Color::Yellow)),
+            Span::raw("Go to top"),
+        ]),
+        Line::from(vec![
+            Span::styled("  G / End    ", Style::default().fg(Color::Yellow)),
+            Span::raw("Go to bottom"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+d     ", Style::default().fg(Color::Yellow)),
+            Span::raw("Page down"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+u     ", Style::default().fg(Color::Yellow)),
+            Span::raw("Page up"),
+        ]),
+        Line::raw(""),
+        Line::styled("  Actions", Style::default().bold()),
+        Line::from(vec![
+            Span::styled("  Enter      ", Style::default().fg(Color::Yellow)),
+            Span::raw("Open detail view"),
+        ]),
+        Line::from(vec![
+            Span::styled("  q          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Quit / Close view"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc        ", Style::default().fg(Color::Yellow)),
+            Span::raw("Close detail / help"),
+        ]),
+        Line::from(vec![
+            Span::styled("  ?          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Toggle this help"),
+        ]),
+    ];
+
+    let help_widget = Paragraph::new(help_lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(" Help "),
+    );
+
+    frame.render_widget(help_widget, area);
+}
+
+/// Calculate a centered rectangle with given percentage of width and height.
+fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+    let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
+    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
+    let [area] = vertical.areas(area);
+    let [area] = horizontal.areas(area);
+    area
 }

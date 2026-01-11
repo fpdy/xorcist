@@ -36,6 +36,8 @@ pub struct App {
     pub view: View,
     /// Detail view state.
     pub detail_state: Option<DetailState>,
+    /// Whether the help modal is shown.
+    pub show_help: bool,
     /// jj command runner.
     runner: JjRunner,
 }
@@ -50,6 +52,7 @@ impl App {
             repo_root,
             view: View::default(),
             detail_state: None,
+            show_help: false,
             runner,
         }
     }
@@ -97,6 +100,16 @@ impl App {
     /// Request application quit.
     pub fn quit(&mut self) {
         self.should_quit = true;
+    }
+
+    /// Toggle help modal visibility.
+    pub fn toggle_help(&mut self) {
+        self.show_help = !self.show_help;
+    }
+
+    /// Close help modal.
+    pub fn close_help(&mut self) {
+        self.show_help = false;
     }
 
     /// Open detail view for selected entry.

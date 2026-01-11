@@ -66,6 +66,22 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
         if let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
+            // Handle ? key globally for help toggle
+            if key.code == KeyCode::Char('?') {
+                app.toggle_help();
+                continue;
+            }
+
+            // If help is showing, close it and execute the command
+            if app.show_help {
+                if key.code == KeyCode::Esc {
+                    app.close_help();
+                    continue;
+                }
+                // Close help and fall through to execute the command
+                app.close_help();
+            }
+
             match app.view {
                 View::Log => handle_log_keys(app, key)?,
                 View::Detail => handle_detail_keys(app, key),
