@@ -10,6 +10,8 @@ use ratatui::{
         ScrollbarOrientation, ScrollbarState,
     },
 };
+use unicode_width::UnicodeWidthChar;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, InputMode, ModalState, View};
 use crate::jj::{DiffStatus, LogEntry, ShowOutput};
@@ -164,15 +166,31 @@ fn render_log_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(status_bar, area);
 }
 
-/// Truncate a message to fit within the given width.
+/// Truncate a message to fit within the given display width.
+/// Uses unicode-width for correct handling of CJK and other wide characters.
 fn truncate_message(msg: &str, max_width: usize) -> String {
     // Take only the first line
     let first_line = msg.lines().next().unwrap_or(msg);
-    if first_line.len() <= max_width {
-        first_line.to_string()
-    } else {
-        format!("{}...", &first_line[..max_width.saturating_sub(3)])
+    let width = first_line.width();
+
+    if width <= max_width {
+        return first_line.to_string();
     }
+
+    let target_width = max_width.saturating_sub(3); // Reserve space for "..."
+    let mut current_width = 0;
+    let mut end_idx = 0;
+
+    for (idx, ch) in first_line.char_indices() {
+        let ch_width = ch.width().unwrap_or(0);
+        if current_width + ch_width > target_width {
+            break;
+        }
+        current_width += ch_width;
+        end_idx = idx + ch.len_utf8();
+    }
+
+    format!("{}...", &first_line[..end_idx])
 }
 
 /// Render the detail view.
@@ -537,5 +555,40 @@ fn render_input_overlay(frame: &mut Frame, app: &App) {
     if !input_value.is_empty() || app.is_input_mode() {
         let cursor_x = app.input.visual_cursor().saturating_sub(scroll);
         frame.set_cursor_position(Position::new(inner_area.x + cursor_x as u16, inner_area.y));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_message_ascii() {
+        assert_eq!(truncate_message("hello world", 8), "hello...");
+        assert_eq!(truncate_message("short", 10), "short");
+    }
+
+    #[test]
+    fn test_truncate_message_japanese() {
+        // Japanese characters: 1 char = 2 width
+        assert_eq!(truncate_message("日本語", 10), "日本語"); // 6 width
+        assert_eq!(truncate_message("日本語テスト", 10), "日本語..."); // 12 width -> truncate
+    }
+
+    #[test]
+    fn test_truncate_message_multiline() {
+        // Should only use the first line
+        assert_eq!(truncate_message("first\nsecond", 20), "first");
+        assert_eq!(truncate_message("日本語\n英語", 20), "日本語");
+    }
+
+    #[test]
+    fn test_truncate_message_mixed() {
+        assert_eq!(truncate_message("Hello世界", 10), "Hello世界"); // 5 + 4 = 9 width
+        // "Error: 失敗しました" = 7 + 10 = 17 width, truncate to 15 → "Error: 失敗..." (7 + 4 + 3 = 14)
+        assert_eq!(
+            truncate_message("Error: 失敗しました", 15),
+            "Error: 失敗..."
+        );
     }
 }
