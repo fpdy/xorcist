@@ -4,7 +4,6 @@ use tui_input::Input;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::error::XorcistError;
-use crate::graph::{GraphRow, build_graph_rows};
 use crate::jj::{JjRunner, LogEntry, ShowOutput, fetch_log, fetch_log_after, fetch_show};
 
 /// Current view mode.
@@ -123,8 +122,6 @@ pub enum ModalState {
 /// Result of a command execution.
 #[derive(Debug, Clone)]
 pub struct CommandResult {
-    /// The command that was executed.
-    pub command: String,
     /// Whether the command succeeded.
     pub success: bool,
     /// Output message (stdout or stderr).
@@ -141,8 +138,6 @@ const LOAD_MORE_THRESHOLD: usize = 50;
 pub struct App {
     /// Log entries to display.
     pub entries: Vec<LogEntry>,
-    /// Precomputed DAG graph rows for the log view (same length as `entries`).
-    pub graph_rows: Vec<GraphRow>,
     /// Currently selected index.
     pub selected: usize,
     /// Whether the app should quit.
@@ -178,10 +173,8 @@ pub struct App {
 impl App {
     /// Create a new App with the given log entries.
     pub fn new(entries: Vec<LogEntry>, repo_root: String, runner: JjRunner) -> Self {
-        let graph_rows = build_graph_rows(&entries);
         Self {
             entries,
-            graph_rows,
             selected: 0,
             should_quit: false,
             repo_root,
@@ -309,7 +302,6 @@ impl App {
         }
 
         self.entries.extend(additional);
-        self.graph_rows = build_graph_rows(&self.entries);
         Ok(true)
     }
 
@@ -381,7 +373,6 @@ impl App {
     /// Refresh log entries.
     pub fn refresh_log(&mut self) -> Result<(), XorcistError> {
         self.entries = fetch_log(&self.runner, self.log_limit)?;
-        self.graph_rows = build_graph_rows(&self.entries);
         // Clamp selection to valid range
         if !self.entries.is_empty() && self.selected >= self.entries.len() {
             self.selected = self.entries.len() - 1;
@@ -397,7 +388,6 @@ impl App {
             }
             Err(e) => {
                 self.last_command_result = Some(CommandResult {
-                    command: "unknown".to_string(),
                     success: false,
                     message: e.to_string(),
                 });
@@ -575,7 +565,6 @@ impl App {
     pub fn execute_bookmark_set(&mut self, name: &str) -> Result<(), XorcistError> {
         if name.is_empty() {
             self.last_command_result = Some(CommandResult {
-                command: "jj bookmark set".to_string(),
                 success: false,
                 message: "Bookmark name cannot be empty".to_string(),
             });
@@ -605,13 +594,9 @@ mod tests {
             commit_id: format!("commit_{id}"),
             commit_id_prefix: format!("commit_{id}"),
             commit_id_rest: String::new(),
-            commit_id_full: format!("commit_{id}_FULL"),
-            parent_commit_ids: vec![],
             author: "Test".to_string(),
             timestamp: "now".to_string(),
             description: format!("Entry {id}"),
-            is_working_copy: false,
-            is_immutable: false,
             is_empty: false,
             bookmarks: vec![],
         }

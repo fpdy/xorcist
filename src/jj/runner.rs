@@ -66,8 +66,7 @@ impl JjRunner {
 
     /// Execute `jj new` to create a new change.
     pub fn execute_new(&self, parent: &str) -> Result<CommandResult, XorcistError> {
-        let args = ["new", parent];
-        self.run_command(&args, "jj new")
+        self.run_command(&["new", parent])
     }
 
     /// Execute `jj new -m` to create a new change with a message.
@@ -76,14 +75,12 @@ impl JjRunner {
         parent: &str,
         message: &str,
     ) -> Result<CommandResult, XorcistError> {
-        let args = ["new", parent, "-m", message];
-        self.run_command(&args, "jj new -m")
+        self.run_command(&["new", parent, "-m", message])
     }
 
     /// Execute `jj edit` to edit a revision.
     pub fn execute_edit(&self, revision: &str) -> Result<CommandResult, XorcistError> {
-        let args = ["edit", revision];
-        self.run_command(&args, "jj edit")
+        self.run_command(&["edit", revision])
     }
 
     /// Execute `jj describe -m` to set a commit message.
@@ -92,8 +89,7 @@ impl JjRunner {
         revision: &str,
         message: &str,
     ) -> Result<CommandResult, XorcistError> {
-        let args = ["describe", revision, "-m", message];
-        self.run_command(&args, "jj describe")
+        self.run_command(&["describe", revision, "-m", message])
     }
 
     /// Execute `jj bookmark set` to set a bookmark.
@@ -102,42 +98,36 @@ impl JjRunner {
         name: &str,
         revision: &str,
     ) -> Result<CommandResult, XorcistError> {
-        let args = ["bookmark", "set", name, "-r", revision];
-        self.run_command(&args, "jj bookmark set")
+        self.run_command(&["bookmark", "set", name, "-r", revision])
     }
 
     /// Execute `jj abandon` to abandon a change.
     pub fn execute_abandon(&self, revision: &str) -> Result<CommandResult, XorcistError> {
-        let args = ["abandon", revision];
-        self.run_command(&args, "jj abandon")
+        self.run_command(&["abandon", revision])
     }
 
     /// Execute `jj squash` to squash a change into its parent.
     pub fn execute_squash(&self, revision: &str) -> Result<CommandResult, XorcistError> {
-        let args = ["squash", "-r", revision];
-        self.run_command(&args, "jj squash")
+        self.run_command(&["squash", "-r", revision])
     }
 
     /// Execute `jj git fetch` to fetch from remote.
     pub fn execute_git_fetch(&self) -> Result<CommandResult, XorcistError> {
-        let args = ["git", "fetch"];
-        self.run_command(&args, "jj git fetch")
+        self.run_command(&["git", "fetch"])
     }
 
     /// Execute `jj git push` to push to remote.
     pub fn execute_git_push(&self) -> Result<CommandResult, XorcistError> {
-        let args = ["git", "push"];
-        self.run_command(&args, "jj git push")
+        self.run_command(&["git", "push"])
     }
 
     /// Execute `jj undo` to undo the last operation.
     pub fn execute_undo(&self) -> Result<CommandResult, XorcistError> {
-        let args = ["undo"];
-        self.run_command(&args, "jj undo")
+        self.run_command(&["undo"])
     }
 
     /// Run a jj command and return a CommandResult.
-    fn run_command(&self, args: &[&str], cmd_name: &str) -> Result<CommandResult, XorcistError> {
+    fn run_command(&self, args: &[&str]) -> Result<CommandResult, XorcistError> {
         let output = self.execute(args)?;
         let success = output.status.success();
         let message = if success {
@@ -146,11 +136,7 @@ impl JjRunner {
             String::from_utf8_lossy(&output.stderr).trim().to_string()
         };
 
-        Ok(CommandResult {
-            command: cmd_name.to_string(),
-            success,
-            message,
-        })
+        Ok(CommandResult { success, message })
     }
 }
 
