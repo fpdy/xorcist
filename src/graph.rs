@@ -337,4 +337,52 @@ mod tests {
         assert_eq!(rows[3], "│ ○", "P2: feat branch on right");
         assert_eq!(rows[4], "○─┘", "R: convergence");
     }
+
+    #[test]
+    fn graph_sibling_heads_wrong_order() {
+        // This test reproduces the actual xorcist issue:
+        // Real DAG:
+        //   y(@) -> o (working copy, parent is o)
+        //   p(main) -> [mpkx, o] (merge commit, parents are mpkx and o)
+        //   o -> mpkx
+        //
+        // jj log --no-graph returns: [p, y, o, mpkx, ...]
+        // But correct display order should be: [y(@), p, o, mpkx, ...]
+        //
+        // When input order is wrong (p before y), graph becomes broken.
+        let mut p = e("p", &["mpkx", "o"]); // merge commit
+        p.bookmarks = vec!["main".to_string()];
+
+        let mut y = e("y", &["o"]);
+        y.is_working_copy = true;
+
+        let o = e("o", &["mpkx"]);
+        let mpkx = e("mpkx", &[]);
+
+        // WRONG order (as jj log --no-graph might return):
+        let entries_wrong = vec![p.clone(), y.clone(), o.clone(), mpkx.clone()];
+        let rows_wrong = rows_plain(&entries_wrong);
+
+        // With wrong order, p comes first and takes lane 0,
+        // then y(@) appears and gets pushed to a new lane - broken display
+        // This documents the current broken behavior
+        assert_eq!(
+            rows_wrong[0], "○─┐",
+            "p: merge at lane 0 (wrong - should be @)"
+        );
+        // y(@) should be at top but isn't
+
+        // CORRECT order (@ first):
+        let entries_correct = vec![y, p, o, mpkx];
+        let rows_correct = rows_plain(&entries_correct);
+
+        // With correct order, y(@) is first
+        assert_eq!(rows_correct[0], "@", "y(@): working copy at top");
+        assert_eq!(
+            rows_correct[1], "○─┐",
+            "p: merge, splits to right for second parent o"
+        );
+        // Note: p's parents are [mpkx, o], so main line goes to mpkx (left), o goes right
+        // But y's parent is also o, so o is already in active lanes from y
+    }
 }

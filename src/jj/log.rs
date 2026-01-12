@@ -1,5 +1,7 @@
 //! jj log parsing and fetching.
 
+use std::collections::{BinaryHeap, HashMap, HashSet};
+
 use crate::error::XorcistError;
 use crate::jj::runner::JjRunner;
 
@@ -66,6 +68,7 @@ const LOG_TEMPLATE: &str = r#"change_id.shortest(4).prefix() ++ "\x00" ++ change
 /// Fetch log entries from jj.
 ///
 /// Uses revset `::` to get all history (not just the default limited view).
+/// Entries are reordered to ensure working copy (@) appears first for correct graph rendering.
 pub fn fetch_log(runner: &JjRunner, limit: Option<usize>) -> Result<Vec<LogEntry>, XorcistError> {
     let mut args = vec!["log", "--no-graph", "-T", LOG_TEMPLATE, "-r", "::"];
 
@@ -78,6 +81,7 @@ pub fn fetch_log(runner: &JjRunner, limit: Option<usize>) -> Result<Vec<LogEntry
 
     let output = runner.run_capture(&args)?;
     let entries = parse_log_output(&output);
+    let entries = reorder_entries_for_graph(entries);
     Ok(entries)
 }
 
@@ -86,6 +90,7 @@ pub fn fetch_log(runner: &JjRunner, limit: Option<usize>) -> Result<Vec<LogEntry
 /// Uses revset `::change_id-` (ancestors of parent) combined with `-n limit`
 /// to get the next batch of commits in topological order.
 /// Returns an empty Vec if there are no more entries.
+/// Entries are reordered for correct graph rendering.
 pub fn fetch_log_after(
     runner: &JjRunner,
     after_change_id: &str,
@@ -109,6 +114,7 @@ pub fn fetch_log_after(
 
     let output = runner.run_capture(&args)?;
     let entries = parse_log_output(&output);
+    let entries = reorder_entries_for_graph(entries);
     Ok(entries)
 }
 
@@ -119,6 +125,122 @@ fn parse_log_output(output: &str) -> Vec<LogEntry> {
         .filter(|line| !line.is_empty())
         .filter_map(parse_log_line)
         .collect()
+}
+
+/// Priority key for topological sort.
+/// Higher priority = should appear earlier in output.
+/// Priority order: working_copy (highest) > original_index (lower = earlier)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SortPriority {
+    is_working_copy: bool,
+    /// Negated original index (so that smaller original index = higher priority)
+    neg_original_idx: isize,
+}
+
+impl Ord for SortPriority {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // working_copy first (true > false)
+        // then by neg_original_idx (higher = earlier original position)
+        (self.is_working_copy, self.neg_original_idx)
+            .cmp(&(other.is_working_copy, other.neg_original_idx))
+    }
+}
+
+impl PartialOrd for SortPriority {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Reorder log entries for correct graph rendering.
+///
+/// jj log --no-graph may return entries in an order that doesn't match
+/// the visual graph layout (e.g., a sibling head before working copy).
+/// This function performs a topological sort with priority:
+/// 1. Working copy (@) always comes first among heads
+/// 2. Otherwise, preserve original order as tiebreaker
+///
+/// This ensures the graph rendering in `graph.rs` produces correct results.
+pub fn reorder_entries_for_graph(entries: Vec<LogEntry>) -> Vec<LogEntry> {
+    if entries.len() <= 1 {
+        return entries;
+    }
+
+    let n = entries.len();
+
+    // Build commit_id_full -> index mapping (owned strings to avoid borrow issues)
+    let id_to_idx: HashMap<String, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.commit_id_full.clone(), i))
+        .collect();
+
+    // Store is_working_copy flags before consuming entries
+    let is_working_copy: Vec<bool> = entries.iter().map(|e| e.is_working_copy).collect();
+
+    // Count children for each commit (only within this slice)
+    let mut child_count: Vec<usize> = vec![0; n];
+    for entry in &entries {
+        for parent_id in &entry.parent_commit_ids {
+            if let Some(&parent_idx) = id_to_idx.get(parent_id) {
+                child_count[parent_idx] += 1;
+            }
+        }
+    }
+
+    // Convert to Option<LogEntry> for consumption
+    let mut entries_opt: Vec<Option<LogEntry>> = entries.into_iter().map(Some).collect();
+
+    // Initialize priority queue with heads (commits with no children in slice)
+    // Use BinaryHeap for max-heap behavior
+    let mut heap: BinaryHeap<(SortPriority, usize)> = BinaryHeap::new();
+    for (idx, &count) in child_count.iter().enumerate() {
+        if count == 0 {
+            let priority = SortPriority {
+                is_working_copy: is_working_copy[idx],
+                neg_original_idx: -(idx as isize),
+            };
+            heap.push((priority, idx));
+        }
+    }
+
+    // Kahn's algorithm with priority
+    let mut result: Vec<LogEntry> = Vec::with_capacity(n);
+    let mut emitted: HashSet<usize> = HashSet::new();
+
+    while let Some((_, idx)) = heap.pop() {
+        if emitted.contains(&idx) {
+            continue;
+        }
+        emitted.insert(idx);
+
+        let entry = entries_opt[idx].take().unwrap();
+
+        // Decrement child count for parents and add newly eligible ones
+        for parent_id in &entry.parent_commit_ids {
+            if let Some(&parent_idx) = id_to_idx.get(parent_id)
+                && child_count[parent_idx] > 0
+            {
+                child_count[parent_idx] -= 1;
+                if child_count[parent_idx] == 0 && !emitted.contains(&parent_idx) {
+                    let priority = SortPriority {
+                        is_working_copy: is_working_copy[parent_idx],
+                        neg_original_idx: -(parent_idx as isize),
+                    };
+                    heap.push((priority, parent_idx));
+                }
+            }
+        }
+
+        result.push(entry);
+    }
+
+    // If any entries weren't emitted (shouldn't happen with valid DAG), append them
+    for entry in entries_opt.into_iter().flatten() {
+        result.push(entry);
+    }
+
+    result
 }
 
 /// Parse a single log line.
@@ -266,5 +388,98 @@ mod tests {
         assert_eq!(entries[0].parent_commit_ids, vec!["p0"]);
         assert_eq!(entries[1].change_id, "ghi789");
         assert_eq!(entries[1].bookmarks, vec!["main"]);
+    }
+
+    /// Helper to create a test LogEntry with minimal fields.
+    fn make_entry(id: &str, parents: &[&str], is_working_copy: bool) -> LogEntry {
+        LogEntry {
+            change_id: id.to_string(),
+            change_id_prefix: id.to_string(),
+            change_id_rest: String::new(),
+            commit_id: id.to_string(),
+            commit_id_prefix: id.to_string(),
+            commit_id_rest: String::new(),
+            commit_id_full: id.to_string(),
+            parent_commit_ids: parents.iter().map(|s| s.to_string()).collect(),
+            author: String::new(),
+            timestamp: String::new(),
+            description: format!("desc_{id}"),
+            is_working_copy,
+            is_immutable: false,
+            is_empty: false,
+            bookmarks: vec![],
+        }
+    }
+
+    #[test]
+    fn test_reorder_working_copy_first() {
+        // Simulate jj log --no-graph returning wrong order:
+        // p (merge, main) comes before y (@, working copy)
+        // Correct order should have y first.
+        let p = make_entry("p", &["mpkx", "o"], false); // merge commit
+        let y = make_entry("y", &["o"], true); // working copy
+        let o = make_entry("o", &["mpkx"], false);
+        let mpkx = make_entry("mpkx", &[], false);
+
+        // Wrong input order (as jj might return)
+        let entries = vec![p, y, o, mpkx];
+        let reordered = reorder_entries_for_graph(entries);
+
+        // y (@) should be first
+        assert!(reordered[0].is_working_copy, "working copy should be first");
+        assert_eq!(reordered[0].commit_id_full, "y");
+    }
+
+    #[test]
+    fn test_reorder_preserves_topo_order() {
+        // Linear chain: A -> B -> C -> D
+        // Even if input is [B, A, D, C], output should be topologically valid
+        let a = make_entry("A", &["B"], false);
+        let b = make_entry("B", &["C"], false);
+        let c = make_entry("C", &["D"], false);
+        let d = make_entry("D", &[], false);
+
+        // Scrambled input
+        let entries = vec![b, a, d, c];
+        let reordered = reorder_entries_for_graph(entries);
+
+        // Should produce A, B, C, D (children before parents)
+        let ids: Vec<&str> = reordered
+            .iter()
+            .map(|e| e.commit_id_full.as_str())
+            .collect();
+        assert_eq!(ids, vec!["A", "B", "C", "D"]);
+    }
+
+    #[test]
+    fn test_reorder_empty_and_single() {
+        // Edge cases
+        let empty: Vec<LogEntry> = vec![];
+        assert!(reorder_entries_for_graph(empty).is_empty());
+
+        let single = vec![make_entry("X", &[], false)];
+        let result = reorder_entries_for_graph(single);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].commit_id_full, "X");
+    }
+
+    #[test]
+    fn test_reorder_sibling_heads() {
+        // Two sibling heads: y(@) and p, both have parent o
+        // Even if p comes first in input, y should be first in output
+        let p = make_entry("p", &["o"], false);
+        let y = make_entry("y", &["o"], true); // working copy
+        let o = make_entry("o", &[], false);
+
+        let entries = vec![p, y, o];
+        let reordered = reorder_entries_for_graph(entries);
+
+        // y should be first (working copy priority)
+        assert_eq!(reordered[0].commit_id_full, "y");
+        assert!(reordered[0].is_working_copy);
+        // p should be second
+        assert_eq!(reordered[1].commit_id_full, "p");
+        // o should be last (parent)
+        assert_eq!(reordered[2].commit_id_full, "o");
     }
 }
