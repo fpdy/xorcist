@@ -433,7 +433,7 @@ fn render_detail_status_bar(frame: &mut Frame, area: Rect) {
 
 /// Render the help modal.
 fn render_help(frame: &mut Frame) {
-    let area = centered_rect(frame.area(), 50, 60);
+    let area = centered_rect(frame.area(), 50, 80);
 
     // Clear the area first to avoid background bleed-through
     frame.render_widget(Clear, area);
@@ -470,7 +470,49 @@ fn render_help(frame: &mut Frame) {
             Span::raw("Page up"),
         ]),
         Line::raw(""),
-        Line::styled("  Actions", Style::default().bold()),
+        Line::styled("  jj Commands", Style::default().bold()),
+        Line::from(vec![
+            Span::styled("  n          ", Style::default().fg(Color::Yellow)),
+            Span::raw("New change"),
+        ]),
+        Line::from(vec![
+            Span::styled("  N          ", Style::default().fg(Color::Yellow)),
+            Span::raw("New change with message"),
+        ]),
+        Line::from(vec![
+            Span::styled("  e          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Edit revision"),
+        ]),
+        Line::from(vec![
+            Span::styled("  d          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Describe revision"),
+        ]),
+        Line::from(vec![
+            Span::styled("  b          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Set bookmark"),
+        ]),
+        Line::from(vec![
+            Span::styled("  a          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Abandon revision"),
+        ]),
+        Line::from(vec![
+            Span::styled("  s          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Squash into parent"),
+        ]),
+        Line::from(vec![
+            Span::styled("  f          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Git fetch"),
+        ]),
+        Line::from(vec![
+            Span::styled("  p          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Git push"),
+        ]),
+        Line::from(vec![
+            Span::styled("  u          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Undo last operation"),
+        ]),
+        Line::raw(""),
+        Line::styled("  General", Style::default().bold()),
         Line::from(vec![
             Span::styled("  Enter      ", Style::default().fg(Color::Yellow)),
             Span::raw("Open detail view"),
