@@ -72,6 +72,10 @@ pub fn build_graph_rows(entries: &[LogEntry]) -> Vec<GraphRow> {
             0
         };
 
+        // Lane count after node insertion but before parent updates.
+        // This determines vertical line continuations for this row.
+        let active_lane_count_for_render = active_lanes.len();
+
         // Duplicates (to the right) indicate a convergence.
         let dup_lanes_pre_insert: Vec<usize> = active_lanes
             .iter()
@@ -80,14 +84,13 @@ pub fn build_graph_rows(entries: &[LogEntry]) -> Vec<GraphRow> {
             .collect();
 
         // Parents: only use parents that exist in the current log slice.
-        // Sort by their appearance order to stabilize layout.
-        let mut parents: Vec<&str> = entry
+        // Keep jj's parent order: first parent = main line (left lane).
+        let parents: Vec<&str> = entry
             .parent_commit_ids
             .iter()
             .map(|s| s.as_str())
             .filter(|p| idx_of.contains_key(p))
             .collect();
-        parents.sort_by_key(|p| idx_of.get(p).copied().unwrap_or(usize::MAX));
 
         let primary_parent = parents.first().copied();
         let other_parents: Vec<&str> = parents.into_iter().skip(1).collect();
@@ -112,14 +115,11 @@ pub fn build_graph_rows(entries: &[LogEntry]) -> Vec<GraphRow> {
         }
 
         // Convergence endpoints: shift indices to account for inserts to the right of node_lane.
-        let mut converge_endpoints: Vec<usize> = if primary_parent.is_some() {
-            dup_lanes_pre_insert
-                .into_iter()
-                .map(|i| i + split_count)
-                .collect()
-        } else {
-            Vec::new()
-        };
+        // Note: convergence happens regardless of whether the node has parents.
+        let mut converge_endpoints: Vec<usize> = dup_lanes_pre_insert
+            .into_iter()
+            .map(|i| i + split_count)
+            .collect();
         converge_endpoints.sort_unstable();
 
         // Remove converged duplicates from the active lanes (right-to-left).
@@ -146,10 +146,15 @@ pub fn build_graph_rows(entries: &[LogEntry]) -> Vec<GraphRow> {
             lane_count = lane_count.max(m + 1);
         }
 
-        // Initialize lanes: active lanes get vertical continuations.
+        // Initialize lanes: use lane count after node insertion for vertical continuations.
+        // This ensures lanes that exist at this row get vertical lines.
         let mut cells: Vec<Cell2> = (0..lane_count)
             .map(|lane| {
-                let left = if lane < active_lane_count { '│' } else { ' ' };
+                let left = if lane < active_lane_count_for_render {
+                    '│'
+                } else {
+                    ' '
+                };
                 Cell2::lane(lane, left, ' ')
             })
             .collect();
@@ -182,8 +187,8 @@ pub fn build_graph_rows(entries: &[LogEntry]) -> Vec<GraphRow> {
                     break;
                 }
 
-                // Cross if this lane is still active (vertical line present).
-                cells[lane].left = if lane < active_lane_count {
+                // Cross if this lane has a vertical line (was active at render time).
+                cells[lane].left = if lane < active_lane_count_for_render {
                     '┼'
                 } else {
                     '─'
@@ -301,5 +306,35 @@ mod tests {
         assert_eq!(rows[1], "○ │");
         assert_eq!(rows[2], "○ │ │");
         assert_eq!(rows[3], "○─┼─┘");
+    }
+
+    #[test]
+    fn graph_merge_with_child() {
+        // Scenario from actual xorcist bug:
+        // A(@) -> M(merge) -> [P1, P2]
+        // P1 = main line (first parent, should be left lane)
+        // P2 = feat branch (second parent, should be right lane)
+        // Both P1 and P2 -> R (common ancestor)
+        //
+        // Expected jj-style graph:
+        // A:  ○      (simple, no branch lines)
+        // M:  ○─┐    (merge: branch to right for P2)
+        // P1: ○ │    (P1 on left, P2 lane continues on right)
+        // P2: │ ○    (P2 node on right lane)
+        // R:  ○─┘    (convergence from right)
+        let entries = vec![
+            e("A", &["M"]),
+            e("M", &["P1", "P2"]), // P1 first = main line
+            e("P1", &["R"]),
+            e("P2", &["R"]),
+            e("R", &[]),
+        ];
+        let rows = rows_plain(&entries);
+
+        assert_eq!(rows[0], "○", "A: working copy, single lane");
+        assert_eq!(rows[1], "○─┐", "M: merge, split to right");
+        assert_eq!(rows[2], "○ │", "P1: main line on left");
+        assert_eq!(rows[3], "│ ○", "P2: feat branch on right");
+        assert_eq!(rows[4], "○─┘", "R: convergence");
     }
 }
