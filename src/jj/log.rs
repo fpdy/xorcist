@@ -56,8 +56,10 @@ impl LogEntry {
 const LOG_TEMPLATE: &str = r#"change_id.shortest(4).prefix() ++ "\x00" ++ change_id.shortest(4).rest() ++ "\x00" ++ commit_id.shortest(4).prefix() ++ "\x00" ++ commit_id.shortest(4).rest() ++ "\x00" ++ author.name() ++ "\x00" ++ committer.timestamp().ago() ++ "\x00" ++ coalesce(description.first_line(), "(no description)") ++ "\x00" ++ current_working_copy ++ "\x00" ++ immutable ++ "\x00" ++ empty ++ "\x00" ++ bookmarks.join(",") ++ "\n""#;
 
 /// Fetch log entries from jj.
+///
+/// Uses revset `::` to get all history (not just the default limited view).
 pub fn fetch_log(runner: &JjRunner, limit: Option<usize>) -> Result<Vec<LogEntry>, XorcistError> {
-    let mut args = vec!["log", "--no-graph", "-T", LOG_TEMPLATE];
+    let mut args = vec!["log", "--no-graph", "-T", LOG_TEMPLATE, "-r", "::"];
 
     let limit_str;
     if let Some(n) = limit {
@@ -65,6 +67,27 @@ pub fn fetch_log(runner: &JjRunner, limit: Option<usize>) -> Result<Vec<LogEntry
         args.push("-n");
         args.push(&limit_str);
     }
+
+    let output = runner.run_capture(&args)?;
+    let entries = parse_log_output(&output);
+    Ok(entries)
+}
+
+/// Fetch additional log entries starting after the given change_id.
+///
+/// Uses revset `ancestors(change_id)` to get commits older than the specified one.
+/// Returns an empty Vec if there are no more entries.
+pub fn fetch_log_after(
+    runner: &JjRunner,
+    after_change_id: &str,
+    limit: usize,
+) -> Result<Vec<LogEntry>, XorcistError> {
+    // Use revset to get ancestors of the given change, excluding the change itself
+    // `ancestors(X, N)` gets N ancestors of X (not including X itself when used with ~X)
+    // We use `X- & ancestors(X-)` which is "parents of X and their ancestors"
+    let revset = format!("ancestors({after_change_id}-, {limit})");
+
+    let args = vec!["log", "--no-graph", "-T", LOG_TEMPLATE, "-r", &revset];
 
     let output = runner.run_capture(&args)?;
     let entries = parse_log_output(&output);

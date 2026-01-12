@@ -142,7 +142,12 @@ fn create_list_item(entry: &LogEntry) -> ListItem<'_> {
 /// Render the status bar for log view.
 fn render_log_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     // Show command result if available, otherwise show help text
-    let (text, style) = if let Some(result) = &app.last_command_result {
+    let (text, style) = if app.is_loading_more {
+        (
+            " Loading more entries... ".to_string(),
+            Style::default().bg(Color::DarkGray).fg(Color::Yellow),
+        )
+    } else if let Some(result) = &app.last_command_result {
         let color = if result.success {
             Color::Green
         } else {
@@ -155,11 +160,16 @@ fn render_log_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         );
         (msg, Style::default().bg(Color::DarkGray).fg(color))
     } else {
-        let help = " n: new  e: edit  d: describe  b: bookmark  Enter: show  q: quit  ?: help ";
-        (
-            help.to_string(),
-            Style::default().bg(Color::DarkGray).fg(Color::White),
-        )
+        // Build help text with entry count info
+        let count_info = if app.has_more_entries {
+            format!("[{}+ entries] ", app.entries.len())
+        } else {
+            format!("[{} entries] ", app.entries.len())
+        };
+        let help = format!(
+            " {count_info}n: new  e: edit  d: describe  b: bookmark  Enter: show  q: quit  ?: help "
+        );
+        (help, Style::default().bg(Color::DarkGray).fg(Color::White))
     };
 
     let status_bar = Paragraph::new(text).style(style);

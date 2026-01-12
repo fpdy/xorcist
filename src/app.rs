@@ -5,7 +5,7 @@ use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 use crate::error::XorcistError;
-use crate::jj::{JjRunner, LogEntry, ShowOutput, fetch_log, fetch_show};
+use crate::jj::{JjRunner, LogEntry, ShowOutput, fetch_log, fetch_log_after, fetch_show};
 
 /// Current view mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -131,6 +131,12 @@ pub struct CommandResult {
     pub message: String,
 }
 
+/// Default batch size for loading more entries.
+const DEFAULT_BATCH_SIZE: usize = 500;
+
+/// Threshold for triggering load more (entries from end).
+const LOAD_MORE_THRESHOLD: usize = 50;
+
 /// Application state.
 pub struct App {
     /// Log entries to display.
@@ -157,6 +163,12 @@ pub struct App {
     pub input_mode: Option<InputMode>,
     /// Text input buffer.
     pub input: Input,
+    /// Log entry limit (None = no limit, i.e., all history).
+    log_limit: Option<usize>,
+    /// Whether there are more entries to load.
+    pub has_more_entries: bool,
+    /// Whether we are currently loading more entries.
+    pub is_loading_more: bool,
 }
 
 impl App {
@@ -175,7 +187,21 @@ impl App {
             last_command_result: None,
             input_mode: None,
             input: Input::default(),
+            log_limit: Some(DEFAULT_BATCH_SIZE),
+            has_more_entries: false, // Will be set by set_log_limit
+            is_loading_more: false,
         }
+    }
+
+    /// Set the log entry limit and determine if more entries might be available.
+    pub fn set_log_limit(&mut self, limit: Option<usize>) {
+        self.log_limit = limit;
+        // If no limit (--all), we have all entries
+        // Otherwise, assume more entries exist if we loaded exactly the limit
+        self.has_more_entries = match limit {
+            None => false,
+            Some(n) => self.entries.len() >= n,
+        };
     }
 
     /// Move selection down.
@@ -216,6 +242,53 @@ impl App {
     /// Page up (move by visible height).
     pub fn page_up(&mut self, page_size: usize) {
         self.selected = self.selected.saturating_sub(page_size);
+    }
+
+    /// Check if we need to load more entries and do so if necessary.
+    ///
+    /// This should be called after navigation operations.
+    /// Returns true if more entries were loaded.
+    pub fn check_and_load_more(&mut self) -> Result<bool, XorcistError> {
+        // Skip if:
+        // - No limit set (--all mode, already have everything)
+        // - No more entries available
+        // - Already loading
+        // - Not near the end of the list
+        if self.log_limit.is_none() || !self.has_more_entries || self.is_loading_more {
+            return Ok(false);
+        }
+
+        let entries_from_end = self.entries.len().saturating_sub(self.selected);
+        if entries_from_end > LOAD_MORE_THRESHOLD {
+            return Ok(false);
+        }
+
+        // Get the last entry's change_id to use as anchor
+        let Some(last_entry) = self.entries.last() else {
+            return Ok(false);
+        };
+        let after_change_id = last_entry.change_id.clone();
+
+        self.is_loading_more = true;
+
+        // Fetch more entries
+        let batch_size = self.log_limit.unwrap_or(DEFAULT_BATCH_SIZE);
+        let additional = fetch_log_after(&self.runner, &after_change_id, batch_size)?;
+
+        self.is_loading_more = false;
+
+        if additional.is_empty() {
+            self.has_more_entries = false;
+            return Ok(false);
+        }
+
+        // If we got fewer than requested, we've reached the end
+        if additional.len() < batch_size {
+            self.has_more_entries = false;
+        }
+
+        self.entries.extend(additional);
+        Ok(true)
     }
 
     /// Request application quit.
@@ -285,7 +358,7 @@ impl App {
 
     /// Refresh log entries.
     pub fn refresh_log(&mut self) -> Result<(), XorcistError> {
-        self.entries = fetch_log(&self.runner, Some(500))?;
+        self.entries = fetch_log(&self.runner, self.log_limit)?;
         // Clamp selection to valid range
         if !self.entries.is_empty() && self.selected >= self.entries.len() {
             self.selected = self.entries.len() - 1;

@@ -8,6 +8,7 @@ mod ui;
 use std::env;
 
 use anyhow::{Context, Result};
+use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tui_input::backend::crossterm::EventHandler;
 
@@ -15,7 +16,23 @@ use app::{App, InputMode, View};
 use error::XorcistError;
 use jj::{JjRunner, fetch_log, find_jj_repo};
 
+/// A TUI client for jj (Jujutsu VCS).
+#[derive(Parser, Debug)]
+#[command(name = "xor", version, about)]
+struct Args {
+    /// Maximum number of log entries to load.
+    /// Use --all to load the entire history.
+    #[arg(short = 'n', long, default_value = "500")]
+    limit: usize,
+
+    /// Load all history (may be slow on large repositories).
+    #[arg(long)]
+    all: bool,
+}
+
 fn main() -> Result<()> {
+    let args = Args::parse();
+
     // Find jj repository
     let current_dir = env::current_dir().context("failed to get current directory")?;
     let repo = find_jj_repo(&current_dir).ok_or(XorcistError::NotInRepo)?;
@@ -28,8 +45,11 @@ fn main() -> Result<()> {
         return Err(XorcistError::JjNotFound.into());
     }
 
+    // Determine limit: --all overrides --limit
+    let limit = if args.all { None } else { Some(args.limit) };
+
     // Fetch log entries
-    let entries = fetch_log(&runner, Some(500)).context("failed to fetch jj log")?;
+    let entries = fetch_log(&runner, limit).context("failed to fetch jj log")?;
 
     // Create app state
     let repo_root_display = repo
@@ -38,7 +58,8 @@ fn main() -> Result<()> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| repo.root.to_string_lossy().to_string());
 
-    let app = App::new(entries, repo_root_display, runner);
+    let mut app = App::new(entries, repo_root_display, runner);
+    app.set_log_limit(limit);
 
     // Run TUI
     run_tui(app)
@@ -108,12 +129,16 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
 
 /// Handle key events in log view.
 fn handle_log_keys(app: &mut App, key: KeyEvent) -> Result<()> {
+    // Track if we need to check for loading more entries
+    let mut check_load_more = false;
+
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => {
             app.quit();
         }
         KeyCode::Char('j') | KeyCode::Down => {
             app.select_next();
+            check_load_more = true;
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.select_previous();
@@ -123,18 +148,21 @@ fn handle_log_keys(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('G') | KeyCode::End => {
             app.select_last();
+            check_load_more = true;
         }
         KeyCode::Enter => {
             app.open_detail().context("failed to open detail view")?;
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.page_down(10);
+            check_load_more = true;
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.page_up(10);
         }
         KeyCode::PageDown => {
             app.page_down(10);
+            check_load_more = true;
         }
         KeyCode::PageUp => {
             app.page_up(10);
@@ -188,6 +216,13 @@ fn handle_log_keys(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         _ => {}
     }
+
+    // Check if we need to load more entries after navigation
+    if check_load_more {
+        app.check_and_load_more()
+            .context("failed to load more entries")?;
+    }
+
     Ok(())
 }
 
