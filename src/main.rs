@@ -1,6 +1,7 @@
 //! xorcist - A TUI client for jj (Jujutsu VCS).
 
 mod app;
+mod conventional;
 mod error;
 mod jj;
 mod ui;

@@ -65,14 +65,15 @@ fn render_log_list(frame: &mut Frame, area: Rect, app: &App) {
     let items: Vec<ListItem> = app
         .entries
         .iter()
-        .map(|entry| create_list_item(entry))
+        .enumerate()
+        .map(|(i, entry)| create_list_item(entry, i == app.selected))
         .collect();
 
     let list = List::new(items)
         .block(Block::default().borders(Borders::NONE))
         .highlight_style(
             Style::default()
-                .bg(Color::DarkGray)
+                .bg(Color::Indexed(236)) // Dark blue-gray, distinct from DarkGray text
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("> ");
@@ -84,7 +85,18 @@ fn render_log_list(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Create a list item from a log entry.
-fn create_list_item(entry: &LogEntry) -> ListItem<'_> {
+///
+/// When `is_selected` is true, dim colors are brightened for visibility
+/// against the highlight background.
+fn create_list_item(entry: &LogEntry, is_selected: bool) -> ListItem<'_> {
+    // Use brighter colors when selected to ensure visibility against highlight bg
+    // Indexed(245) is slightly dimmer than Gray but still visible on dark background
+    let dim_color = if is_selected {
+        Color::Indexed(245)
+    } else {
+        Color::DarkGray
+    };
+
     let symbol = entry.graph_symbol();
     let symbol_style = if entry.is_working_copy {
         Style::default().fg(Color::Green).bold()
@@ -103,8 +115,8 @@ fn create_list_item(entry: &LogEntry) -> ListItem<'_> {
                 .fg(Color::Magenta)
                 .add_modifier(Modifier::BOLD),
         ),
-        // Rest of change ID: dim/dark gray
-        Span::styled(&entry.change_id_rest, Style::default().fg(Color::DarkGray)),
+        // Rest of change ID: dim color (brightened when selected)
+        Span::styled(&entry.change_id_rest, Style::default().fg(dim_color)),
         Span::raw(" "),
     ];
 
@@ -117,13 +129,14 @@ fn create_list_item(entry: &LogEntry) -> ListItem<'_> {
         ));
     }
 
-    // Description
+    // Description (with conventional commits emoji conversion)
+    let display_desc = format_description(&entry.description);
     let desc_style = if entry.is_empty {
-        Style::default().fg(Color::DarkGray).italic()
+        Style::default().fg(dim_color).italic()
     } else {
         Style::default()
     };
-    spans.push(Span::styled(&entry.description, desc_style));
+    spans.push(Span::styled(display_desc, desc_style));
 
     // Author and timestamp (right-aligned conceptually, but we just append)
     spans.push(Span::raw(" "));
@@ -133,10 +146,15 @@ fn create_list_item(entry: &LogEntry) -> ListItem<'_> {
     ));
     spans.push(Span::styled(
         &entry.timestamp,
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(dim_color),
     ));
 
     ListItem::new(Line::from(spans))
+}
+
+/// Format description with conventional commits emoji conversion.
+fn format_description(desc: &str) -> String {
+    crate::conventional::format_commit_message(desc)
 }
 
 /// Render the status bar for log view.
@@ -325,13 +343,20 @@ fn build_detail_lines(output: &ShowOutput) -> Vec<Line<'static>> {
 
     lines.push(Line::raw(""));
 
-    // Description
+    // Description (first line gets emoji conversion)
     lines.push(Line::styled(
         "─── Description ───",
         Style::default().fg(Color::DarkGray),
     ));
-    for desc_line in output.description.lines() {
-        lines.push(Line::raw(desc_line.to_string()));
+    let mut desc_lines = output.description.lines();
+    if let Some(first_line) = desc_lines.next() {
+        // Apply conventional commits emoji to first line only
+        let formatted = format_description(first_line);
+        lines.push(Line::raw(formatted));
+        // Remaining lines as-is
+        for desc_line in desc_lines {
+            lines.push(Line::raw(desc_line.to_string()));
+        }
     }
     if output.description.is_empty() {
         lines.push(Line::styled(
