@@ -12,6 +12,7 @@ pub struct LogEntry {
     pub change_id_prefix: String,
     /// Rest of change ID after the unique prefix.
     pub change_id_rest: String,
+
     /// Short commit ID.
     #[allow(dead_code)] // Will be used for commit details view
     pub commit_id: String,
@@ -21,6 +22,12 @@ pub struct LogEntry {
     /// Rest of commit ID after the unique prefix.
     #[allow(dead_code)]
     pub commit_id_rest: String,
+
+    /// Full commit ID (stable identifier used for graph construction).
+    pub commit_id_full: String,
+    /// Parent commit IDs (full IDs). May contain multiple entries for merge commits.
+    pub parent_commit_ids: Vec<String>,
+
     /// Author name.
     pub author: String,
     /// Relative timestamp (e.g., "2 hours ago").
@@ -53,7 +60,8 @@ impl LogEntry {
 /// Template for machine-readable log output.
 /// Fields are separated by \x00 (null byte) for reliable parsing.
 /// Uses shortest() to get unique prefix for change_id and commit_id.
-const LOG_TEMPLATE: &str = r#"change_id.shortest(4).prefix() ++ "\x00" ++ change_id.shortest(4).rest() ++ "\x00" ++ commit_id.shortest(4).prefix() ++ "\x00" ++ commit_id.shortest(4).rest() ++ "\x00" ++ author.name() ++ "\x00" ++ committer.timestamp().ago() ++ "\x00" ++ coalesce(description.first_line(), "(no description)") ++ "\x00" ++ current_working_copy ++ "\x00" ++ immutable ++ "\x00" ++ empty ++ "\x00" ++ bookmarks.join(",") ++ "\n""#;
+/// Also includes full commit id and parent commit ids for DAG rendering.
+const LOG_TEMPLATE: &str = r#"change_id.shortest(4).prefix() ++ "\x00" ++ change_id.shortest(4).rest() ++ "\x00" ++ commit_id.shortest(4).prefix() ++ "\x00" ++ commit_id.shortest(4).rest() ++ "\x00" ++ commit_id ++ "\x00" ++ parents.map(|c| c.commit_id()).join(",") ++ "\x00" ++ author.name() ++ "\x00" ++ committer.timestamp().ago() ++ "\x00" ++ coalesce(description.first_line(), "(no description)") ++ "\x00" ++ current_working_copy ++ "\x00" ++ immutable ++ "\x00" ++ empty ++ "\x00" ++ bookmarks.join(",") ++ "\n""#;
 
 /// Fetch log entries from jj.
 ///
@@ -116,16 +124,30 @@ fn parse_log_output(output: &str) -> Vec<LogEntry> {
 /// Parse a single log line.
 fn parse_log_line(line: &str) -> Option<LogEntry> {
     let parts: Vec<&str> = line.split('\x00').collect();
-    if parts.len() < 11 {
+    // Fields:
+    // change_prefix, change_rest, commit_prefix, commit_rest, commit_full, parents,
+    // author, timestamp, description, working_copy, immutable, empty, bookmarks
+    if parts.len() < 13 {
         return None;
     }
 
-    let bookmarks = super::parse_bookmarks_field(parts[10]);
+    let bookmarks = super::parse_bookmarks_field(parts[12]);
 
     let change_id_prefix = parts[0].to_string();
     let change_id_rest = parts[1].to_string();
     let commit_id_prefix = parts[2].to_string();
     let commit_id_rest = parts[3].to_string();
+
+    let commit_id_full = parts[4].to_string();
+    let parent_commit_ids = if parts[5].is_empty() {
+        Vec::new()
+    } else {
+        parts[5]
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect()
+    };
 
     Some(LogEntry {
         change_id: format!("{change_id_prefix}{change_id_rest}"),
@@ -134,12 +156,14 @@ fn parse_log_line(line: &str) -> Option<LogEntry> {
         commit_id: format!("{commit_id_prefix}{commit_id_rest}"),
         commit_id_prefix,
         commit_id_rest,
-        author: parts[4].to_string(),
-        timestamp: parts[5].to_string(),
-        description: parts[6].to_string(),
-        is_working_copy: parts[7] == "true",
-        is_immutable: parts[8] == "true",
-        is_empty: parts[9] == "true",
+        commit_id_full,
+        parent_commit_ids,
+        author: parts[6].to_string(),
+        timestamp: parts[7].to_string(),
+        description: parts[8].to_string(),
+        is_working_copy: parts[9] == "true",
+        is_immutable: parts[10] == "true",
+        is_empty: parts[11] == "true",
         bookmarks,
     })
 }
@@ -150,8 +174,9 @@ mod tests {
 
     #[test]
     fn test_parse_log_line() {
-        // Format: change_prefix\0change_rest\0commit_prefix\0commit_rest\0author\0timestamp\0description\0working_copy\0immutable\0empty\0bookmarks
-        let line = "abc\x00123\x00def\x00456\x00Alice\x002 hours ago\x00Add feature\x00true\x00false\x00false\x00main,dev";
+        // Fields:
+        // change_prefix\0change_rest\0commit_prefix\0commit_rest\0commit_full\0parents\0author\0timestamp\0description\0working_copy\0immutable\0empty\0bookmarks
+        let line = "abc\x00123\x00def\x00456\x00def456FULL\x00p1FULL,p2FULL\x00Alice\x002 hours ago\x00Add feature\x00true\x00false\x00false\x00main,dev";
         let entry = parse_log_line(line).unwrap();
 
         assert_eq!(entry.change_id_prefix, "abc");
@@ -160,6 +185,8 @@ mod tests {
         assert_eq!(entry.commit_id_prefix, "def");
         assert_eq!(entry.commit_id_rest, "456");
         assert_eq!(entry.commit_id, "def456");
+        assert_eq!(entry.commit_id_full, "def456FULL");
+        assert_eq!(entry.parent_commit_ids, vec!["p1FULL", "p2FULL"]);
         assert_eq!(entry.author, "Alice");
         assert_eq!(entry.timestamp, "2 hours ago");
         assert_eq!(entry.description, "Add feature");
@@ -171,10 +198,11 @@ mod tests {
 
     #[test]
     fn test_parse_log_line_no_bookmarks() {
-        let line = "abc\x00123\x00def\x00456\x00Alice\x002 hours ago\x00Add feature\x00false\x00true\x00false\x00";
+        let line = "abc\x00123\x00def\x00456\x00def456FULL\x00\x00Alice\x002 hours ago\x00Add feature\x00false\x00true\x00false\x00";
         let entry = parse_log_line(line).unwrap();
 
         assert!(entry.bookmarks.is_empty());
+        assert!(entry.parent_commit_ids.is_empty());
         assert!(!entry.is_working_copy);
         assert!(entry.is_immutable);
     }
@@ -182,7 +210,7 @@ mod tests {
     #[test]
     fn test_parse_log_line_empty_rest() {
         // When the entire ID is the unique prefix, rest is empty
-        let line = "abcd\x00\x00defg\x00\x00Alice\x00now\x00Test\x00false\x00false\x00false\x00";
+        let line = "abcd\x00\x00defg\x00\x00defgFULL\x00\x00Alice\x00now\x00Test\x00false\x00false\x00false\x00";
         let entry = parse_log_line(line).unwrap();
 
         assert_eq!(entry.change_id_prefix, "abcd");
@@ -190,6 +218,8 @@ mod tests {
         assert_eq!(entry.change_id, "abcd");
         assert_eq!(entry.commit_id_prefix, "defg");
         assert!(entry.commit_id_rest.is_empty());
+        assert_eq!(entry.commit_id_full, "defgFULL");
+        assert!(entry.parent_commit_ids.is_empty());
     }
 
     #[test]
@@ -201,6 +231,8 @@ mod tests {
             commit_id: "def456".to_string(),
             commit_id_prefix: "def".to_string(),
             commit_id_rest: "456".to_string(),
+            commit_id_full: "def456FULL".to_string(),
+            parent_commit_ids: vec![],
             author: "Alice".to_string(),
             timestamp: "now".to_string(),
             description: "test".to_string(),
@@ -223,13 +255,15 @@ mod tests {
     #[test]
     fn test_parse_log_output() {
         // Format: change_prefix\0change_rest\0commit_prefix\0commit_rest\0author\0timestamp\0description\0working_copy\0immutable\0empty\0bookmarks
-        let output = "abc\x00123\x00def\x00456\x00Alice\x00now\x00First\x00true\x00false\x00false\x00\nghi\x00789\x00jkl\x00012\x00Bob\x001h ago\x00Second\x00false\x00false\x00false\x00main\n";
+        let output = "abc\x00123\x00def\x00456\x00def456FULL\x00p0\x00Alice\x00now\x00First\x00true\x00false\x00false\x00\nghi\x00789\x00jkl\x00012\x00jkl012FULL\x00\x00Bob\x001h ago\x00Second\x00false\x00false\x00false\x00main\n";
         let entries = parse_log_output(output);
 
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].change_id_prefix, "abc");
         assert_eq!(entries[0].change_id_rest, "123");
         assert_eq!(entries[0].change_id, "abc123");
+        assert_eq!(entries[0].commit_id_full, "def456FULL");
+        assert_eq!(entries[0].parent_commit_ids, vec!["p0"]);
         assert_eq!(entries[1].change_id, "ghi789");
         assert_eq!(entries[1].bookmarks, vec!["main"]);
     }

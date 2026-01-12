@@ -12,6 +12,7 @@ use ratatui::{
 };
 
 use crate::app::{App, InputMode, ModalState, View};
+use crate::graph::{CellKind, GraphRow};
 use crate::jj::{DiffStatus, LogEntry, ShowOutput};
 
 /// Render the entire UI based on current view.
@@ -60,11 +61,20 @@ fn render_title_bar(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Render the log list.
 fn render_log_list(frame: &mut Frame, area: Rect, app: &App) {
+    // Give the graph column a bounded width and ellipsize on overflow.
+    let max_graph_width = area
+        .width
+        .saturating_sub(20) // leave some room for id/description
+        .clamp(6, 40) as usize;
+
     let items: Vec<ListItem> = app
         .entries
         .iter()
         .enumerate()
-        .map(|(i, entry)| create_list_item(entry, i == app.selected))
+        .map(|(i, entry)| {
+            let row = app.graph_rows.get(i);
+            create_list_item(entry, row, i == app.selected, max_graph_width)
+        })
         .collect();
 
     let list = List::new(items)
@@ -86,7 +96,12 @@ fn render_log_list(frame: &mut Frame, area: Rect, app: &App) {
 ///
 /// When `is_selected` is true, dim colors are brightened for visibility
 /// against the highlight background.
-fn create_list_item(entry: &LogEntry, is_selected: bool) -> ListItem<'_> {
+fn create_list_item<'a>(
+    entry: &'a LogEntry,
+    graph_row: Option<&'a GraphRow>,
+    is_selected: bool,
+    max_graph_width: usize,
+) -> ListItem<'a> {
     // Use brighter colors when selected to ensure visibility against highlight bg
     // Indexed(245) is slightly dimmer than Gray but still visible on dark background
     let dim_color = if is_selected {
@@ -95,7 +110,6 @@ fn create_list_item(entry: &LogEntry, is_selected: bool) -> ListItem<'_> {
         Color::DarkGray
     };
 
-    let symbol = entry.graph_symbol();
     let symbol_style = if entry.is_working_copy {
         Style::default().fg(Color::Green).bold()
     } else if entry.is_immutable {
@@ -104,19 +118,33 @@ fn create_list_item(entry: &LogEntry, is_selected: bool) -> ListItem<'_> {
         Style::default().fg(Color::Yellow)
     };
 
-    let mut spans = vec![
-        Span::styled(format!("{symbol} "), symbol_style),
-        // Shortest unique prefix: bright magenta + bold
-        Span::styled(
-            &entry.change_id_prefix,
-            Style::default()
-                .fg(Color::Magenta)
-                .add_modifier(Modifier::BOLD),
-        ),
-        // Rest of change ID: dim color (brightened when selected)
-        Span::styled(&entry.change_id_rest, Style::default().fg(dim_color)),
-        Span::raw(" "),
-    ];
+    let lane_style = Style::default().fg(dim_color);
+
+    let mut spans = Vec::new();
+
+    // Graph column (DAG)
+    if let Some(row) = graph_row {
+        push_graph_spans(&mut spans, row, lane_style, symbol_style, max_graph_width);
+        spans.push(Span::raw(" "));
+    } else {
+        // Fallback (shouldn't happen): show just the node symbol.
+        let symbol = entry.graph_symbol();
+        spans.push(Span::styled(format!("{symbol} "), symbol_style));
+    }
+
+    // Shortest unique prefix: bright magenta + bold
+    spans.push(Span::styled(
+        &entry.change_id_prefix,
+        Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
+    ));
+    // Rest of change ID: dim color (brightened when selected)
+    spans.push(Span::styled(
+        &entry.change_id_rest,
+        Style::default().fg(dim_color),
+    ));
+    spans.push(Span::raw(" "));
 
     // Add bookmarks if present
     if !entry.bookmarks.is_empty() {
@@ -148,6 +176,38 @@ fn create_list_item(entry: &LogEntry, is_selected: bool) -> ListItem<'_> {
     ));
 
     ListItem::new(Line::from(spans))
+}
+
+fn push_graph_spans<'a>(
+    spans: &mut Vec<Span<'a>>,
+    row: &GraphRow,
+    lane_style: Style,
+    node_style: Style,
+    max_width: usize,
+) {
+    let mut flat: Vec<(char, CellKind)> = Vec::with_capacity(row.cells.len() * 2);
+    for cell in &row.cells {
+        flat.push((cell.left, cell.kind_left));
+        flat.push((cell.right, cell.kind_right));
+    }
+
+    // Ellipsize if the graph would be too wide.
+    let truncated = flat.len() > max_width;
+    if truncated {
+        flat.truncate(max_width.saturating_sub(1));
+    }
+
+    for (ch, kind) in flat {
+        let style = match kind {
+            CellKind::Node { .. } => node_style,
+            CellKind::Lane { .. } => lane_style,
+        };
+        spans.push(Span::styled(ch.to_string(), style));
+    }
+
+    if truncated {
+        spans.push(Span::styled("…", lane_style));
+    }
 }
 
 fn format_description(desc: &str) -> String {
