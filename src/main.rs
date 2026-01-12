@@ -3,6 +3,7 @@
 mod app;
 mod conventional;
 mod error;
+mod graph;
 mod jj;
 mod ui;
 
