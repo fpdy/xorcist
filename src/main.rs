@@ -84,6 +84,18 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
             ui::render(frame, app);
         })?;
 
+        // Check if we need to load more entries (after drawing, so "Loading..." is visible)
+        if app.should_load_more() {
+            app.start_loading();
+            // Redraw to show "Loading..." status
+            terminal.draw(|frame| {
+                ui::render(frame, app);
+            })?;
+            // Now perform the actual load
+            app.load_more_entries()
+                .context("failed to load more entries")?;
+        }
+
         // Handle events
         let event = event::read()?;
         if let Event::Key(key) = &event
@@ -217,10 +229,9 @@ fn handle_log_keys(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {}
     }
 
-    // Check if we need to load more entries after navigation
+    // Mark that we should check for loading more entries
     if check_load_more {
-        app.check_and_load_more()
-            .context("failed to load more entries")?;
+        app.request_load_more_check();
     }
 
     Ok(())

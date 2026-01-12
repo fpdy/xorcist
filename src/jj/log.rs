@@ -75,19 +75,29 @@ pub fn fetch_log(runner: &JjRunner, limit: Option<usize>) -> Result<Vec<LogEntry
 
 /// Fetch additional log entries starting after the given change_id.
 ///
-/// Uses revset `ancestors(change_id)` to get commits older than the specified one.
+/// Uses revset `::change_id-` (ancestors of parent) combined with `-n limit`
+/// to get the next batch of commits in topological order.
 /// Returns an empty Vec if there are no more entries.
 pub fn fetch_log_after(
     runner: &JjRunner,
     after_change_id: &str,
     limit: usize,
 ) -> Result<Vec<LogEntry>, XorcistError> {
-    // Use revset to get ancestors of the given change, excluding the change itself
-    // `ancestors(X, N)` gets N ancestors of X (not including X itself when used with ~X)
-    // We use `X- & ancestors(X-)` which is "parents of X and their ancestors"
-    let revset = format!("ancestors({after_change_id}-, {limit})");
+    // ::X- means "all ancestors of X's parent(s)", which excludes X itself
+    // Combined with -n limit, this gives us the next `limit` entries in topo order
+    let revset = format!("::{after_change_id}-");
+    let limit_str = limit.to_string();
 
-    let args = vec!["log", "--no-graph", "-T", LOG_TEMPLATE, "-r", &revset];
+    let args = vec![
+        "log",
+        "--no-graph",
+        "-T",
+        LOG_TEMPLATE,
+        "-r",
+        &revset,
+        "-n",
+        &limit_str,
+    ];
 
     let output = runner.run_capture(&args)?;
     let entries = parse_log_output(&output);

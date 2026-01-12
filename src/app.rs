@@ -169,6 +169,8 @@ pub struct App {
     pub has_more_entries: bool,
     /// Whether we are currently loading more entries.
     pub is_loading_more: bool,
+    /// Whether a load-more check has been requested.
+    pending_load_more: bool,
 }
 
 impl App {
@@ -190,6 +192,7 @@ impl App {
             log_limit: Some(DEFAULT_BATCH_SIZE),
             has_more_entries: false, // Will be set by set_log_limit
             is_loading_more: false,
+            pending_load_more: false,
         }
     }
 
@@ -244,32 +247,46 @@ impl App {
         self.selected = self.selected.saturating_sub(page_size);
     }
 
-    /// Check if we need to load more entries and do so if necessary.
-    ///
-    /// This should be called after navigation operations.
-    /// Returns true if more entries were loaded.
-    pub fn check_and_load_more(&mut self) -> Result<bool, XorcistError> {
+    /// Request a check for loading more entries.
+    /// This sets a flag that will be checked by the event loop.
+    pub fn request_load_more_check(&mut self) {
+        self.pending_load_more = true;
+    }
+
+    /// Check if we should load more entries.
+    /// Returns true if load is needed and conditions are met.
+    pub fn should_load_more(&self) -> bool {
+        if !self.pending_load_more {
+            return false;
+        }
         // Skip if:
         // - No limit set (--all mode, already have everything)
         // - No more entries available
         // - Already loading
         // - Not near the end of the list
         if self.log_limit.is_none() || !self.has_more_entries || self.is_loading_more {
-            return Ok(false);
+            return false;
         }
 
         let entries_from_end = self.entries.len().saturating_sub(self.selected);
-        if entries_from_end > LOAD_MORE_THRESHOLD {
-            return Ok(false);
-        }
+        entries_from_end <= LOAD_MORE_THRESHOLD
+    }
 
+    /// Mark that we're starting to load more entries.
+    pub fn start_loading(&mut self) {
+        self.is_loading_more = true;
+        self.pending_load_more = false;
+    }
+
+    /// Actually load more entries.
+    /// Should be called after start_loading() and a redraw.
+    pub fn load_more_entries(&mut self) -> Result<bool, XorcistError> {
         // Get the last entry's change_id to use as anchor
         let Some(last_entry) = self.entries.last() else {
+            self.is_loading_more = false;
             return Ok(false);
         };
         let after_change_id = last_entry.change_id.clone();
-
-        self.is_loading_more = true;
 
         // Fetch more entries
         let batch_size = self.log_limit.unwrap_or(DEFAULT_BATCH_SIZE);
@@ -804,5 +821,84 @@ mod tests {
         // When max_width is very small
         assert_eq!(truncate_str("hello", 3), "...");
         assert_eq!(truncate_str("hello", 4), "h...");
+    }
+
+    #[test]
+    fn test_should_load_more_not_pending() {
+        let entries: Vec<_> = (0..100).map(|i| make_entry(&i.to_string())).collect();
+        let mut app = App::new(entries, "/repo".to_string(), make_runner());
+        app.set_log_limit(Some(100));
+
+        // No pending request
+        assert!(!app.should_load_more());
+    }
+
+    #[test]
+    fn test_should_load_more_near_end() {
+        let entries: Vec<_> = (0..100).map(|i| make_entry(&i.to_string())).collect();
+        let mut app = App::new(entries, "/repo".to_string(), make_runner());
+        app.set_log_limit(Some(100));
+
+        // Move near the end and request load
+        app.selected = 95; // 5 from end, within LOAD_MORE_THRESHOLD (50)
+        app.request_load_more_check();
+
+        assert!(app.should_load_more());
+    }
+
+    #[test]
+    fn test_should_load_more_not_near_end() {
+        let entries: Vec<_> = (0..100).map(|i| make_entry(&i.to_string())).collect();
+        let mut app = App::new(entries, "/repo".to_string(), make_runner());
+        app.set_log_limit(Some(100));
+
+        // Stay at the beginning
+        app.selected = 10; // 90 from end, outside LOAD_MORE_THRESHOLD
+        app.request_load_more_check();
+
+        assert!(!app.should_load_more());
+    }
+
+    #[test]
+    fn test_should_load_more_all_mode() {
+        let entries: Vec<_> = (0..100).map(|i| make_entry(&i.to_string())).collect();
+        let mut app = App::new(entries, "/repo".to_string(), make_runner());
+        app.set_log_limit(None); // --all mode
+
+        app.selected = 95;
+        app.request_load_more_check();
+
+        // Should not load in --all mode
+        assert!(!app.should_load_more());
+    }
+
+    #[test]
+    fn test_should_load_more_no_more_entries() {
+        let entries: Vec<_> = (0..50).map(|i| make_entry(&i.to_string())).collect();
+        let mut app = App::new(entries, "/repo".to_string(), make_runner());
+        app.set_log_limit(Some(100));
+
+        // Fewer entries than limit means no more available
+        assert!(!app.has_more_entries);
+
+        app.selected = 45;
+        app.request_load_more_check();
+
+        assert!(!app.should_load_more());
+    }
+
+    #[test]
+    fn test_start_loading_clears_pending() {
+        let entries: Vec<_> = (0..100).map(|i| make_entry(&i.to_string())).collect();
+        let mut app = App::new(entries, "/repo".to_string(), make_runner());
+        app.set_log_limit(Some(100));
+
+        app.selected = 95;
+        app.request_load_more_check();
+        assert!(app.should_load_more());
+
+        app.start_loading();
+        assert!(app.is_loading_more);
+        assert!(!app.should_load_more()); // pending cleared, is_loading_more blocks
     }
 }
