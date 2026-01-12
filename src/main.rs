@@ -180,9 +180,7 @@ fn handle_log_keys(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::PageUp => {
             app.page_up(10);
         }
-        // ─────────────────────────────────────────────────────────────────────
         // jj commands with confirmation
-        // ─────────────────────────────────────────────────────────────────────
         KeyCode::Char('a') => {
             // jj abandon (with confirmation)
             app.show_abandon_confirm();
@@ -204,9 +202,7 @@ fn handle_log_keys(app: &mut App, key: KeyEvent) -> Result<()> {
             // jj undo (with confirmation)
             app.show_undo_confirm();
         }
-        // ─────────────────────────────────────────────────────────────────────
         // Phase1 jj command keys
-        // ─────────────────────────────────────────────────────────────────────
         KeyCode::Char('n') => {
             // jj new (without message)
             app.execute_new().context("failed to execute jj new")?;

@@ -1,8 +1,7 @@
 //! Application state management.
 
 use tui_input::Input;
-use unicode_width::UnicodeWidthChar;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::error::XorcistError;
 use crate::jj::{JjRunner, LogEntry, ShowOutput, fetch_log, fetch_log_after, fetch_show};
@@ -88,7 +87,7 @@ impl PendingAction {
 
 /// Truncate a string to fit within a maximum display width.
 /// Uses unicode-width for correct handling of CJK and other wide characters.
-fn truncate_str(s: &str, max_width: usize) -> String {
+pub(crate) fn truncate_str(s: &str, max_width: usize) -> String {
     let width = s.width();
     if width <= max_width {
         return s.to_string();
@@ -399,10 +398,6 @@ impl App {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Modal dialog management
-    // ─────────────────────────────────────────────────────────────────────────
-
     /// Check if a modal is currently shown.
     pub fn is_modal_open(&self) -> bool {
         !matches!(self.modal, ModalState::None)
@@ -476,10 +471,6 @@ impl App {
         Ok(())
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Direct command execution (no confirmation)
-    // ─────────────────────────────────────────────────────────────────────────
-
     /// Execute `jj git fetch`.
     pub fn execute_git_fetch(&mut self) -> Result<(), XorcistError> {
         let result = self.runner.execute_git_fetch();
@@ -487,10 +478,6 @@ impl App {
         self.refresh_log()?;
         Ok(())
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Input mode management
-    // ─────────────────────────────────────────────────────────────────────────
 
     /// Start input mode for text entry.
     pub fn start_input_mode(&mut self, mode: InputMode) {
@@ -524,10 +511,6 @@ impl App {
         }
         Ok(())
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Command execution (Phase1 commands)
-    // ─────────────────────────────────────────────────────────────────────────
 
     /// Execute `jj new` on the selected revision.
     pub fn execute_new(&mut self) -> Result<(), XorcistError> {

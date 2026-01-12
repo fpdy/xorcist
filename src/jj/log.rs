@@ -120,11 +120,7 @@ fn parse_log_line(line: &str) -> Option<LogEntry> {
         return None;
     }
 
-    let bookmarks = if parts[10].is_empty() {
-        Vec::new()
-    } else {
-        parts[10].split(',').map(String::from).collect()
-    };
+    let bookmarks = super::parse_bookmarks_field(parts[10]);
 
     let change_id_prefix = parts[0].to_string();
     let change_id_rest = parts[1].to_string();

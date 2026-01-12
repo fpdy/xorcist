@@ -64,10 +64,6 @@ impl JjRunner {
             .unwrap_or(false)
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Phase1 command execution methods
-    // ─────────────────────────────────────────────────────────────────────────
-
     /// Execute `jj new` to create a new change.
     pub fn execute_new(&self, parent: &str) -> Result<CommandResult, XorcistError> {
         let args = ["new", parent];
@@ -109,10 +105,6 @@ impl JjRunner {
         let args = ["bookmark", "set", name, "-r", revision];
         self.run_command(&args, "jj bookmark set")
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Phase2 command execution methods
-    // ─────────────────────────────────────────────────────────────────────────
 
     /// Execute `jj abandon` to abandon a change.
     pub fn execute_abandon(&self, revision: &str) -> Result<CommandResult, XorcistError> {

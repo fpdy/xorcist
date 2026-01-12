@@ -112,11 +112,7 @@ fn parse_show_meta(output: &str) -> Result<ShowMeta, XorcistError> {
         )));
     }
 
-    let bookmarks = if parts[7].is_empty() {
-        Vec::new()
-    } else {
-        parts[7].split(',').map(String::from).collect()
-    };
+    let bookmarks = super::parse_bookmarks_field(parts[7]);
 
     // Trim trailing newline from description (jj adds one at the end)
     let description = parts[6].trim_end_matches('\n').to_string();

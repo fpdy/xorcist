@@ -10,8 +10,6 @@ use ratatui::{
         ScrollbarOrientation, ScrollbarState,
     },
 };
-use unicode_width::UnicodeWidthChar;
-use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, InputMode, ModalState, View};
 use crate::jj::{DiffStatus, LogEntry, ShowOutput};
@@ -152,7 +150,6 @@ fn create_list_item(entry: &LogEntry, is_selected: bool) -> ListItem<'_> {
     ListItem::new(Line::from(spans))
 }
 
-/// Format description with conventional commits emoji conversion.
 fn format_description(desc: &str) -> String {
     crate::conventional::format_commit_message(desc)
 }
@@ -194,31 +191,10 @@ fn render_log_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(status_bar, area);
 }
 
-/// Truncate a message to fit within the given display width.
-/// Uses unicode-width for correct handling of CJK and other wide characters.
+/// Truncate a message (first line only) to fit within the given display width.
 fn truncate_message(msg: &str, max_width: usize) -> String {
-    // Take only the first line
     let first_line = msg.lines().next().unwrap_or(msg);
-    let width = first_line.width();
-
-    if width <= max_width {
-        return first_line.to_string();
-    }
-
-    let target_width = max_width.saturating_sub(3); // Reserve space for "..."
-    let mut current_width = 0;
-    let mut end_idx = 0;
-
-    for (idx, ch) in first_line.char_indices() {
-        let ch_width = ch.width().unwrap_or(0);
-        if current_width + ch_width > target_width {
-            break;
-        }
-        current_width += ch_width;
-        end_idx = idx + ch.len_utf8();
-    }
-
-    format!("{}...", &first_line[..end_idx])
+    crate::app::truncate_str(first_line, max_width)
 }
 
 /// Render the detail view.
@@ -265,8 +241,7 @@ fn render_detail_content(frame: &mut Frame, area: Rect, app: &mut App) {
     // Get current scroll position (re-borrow after mutation)
     let scroll = app.detail_state.as_ref().map(|s| s.scroll).unwrap_or(0);
 
-    // Calculate visible height for scroll clamping
-    let visible_height = area.height.saturating_sub(0) as usize;
+    let visible_height = area.height as usize;
     let max_scroll = content_height.saturating_sub(visible_height);
     let clamped_scroll = scroll.min(max_scroll);
 
@@ -287,40 +262,32 @@ fn render_detail_content(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
+fn styled_id_line(label: &'static str, prefix: &str, rest: &str, color: Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(label, Style::default().bold()),
+        Span::styled(
+            prefix.to_string(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(rest.to_string(), Style::default().fg(Color::DarkGray)),
+    ])
+}
+
 /// Build lines for detail view content.
 fn build_detail_lines(output: &ShowOutput) -> Vec<Line<'static>> {
-    // Header section
     let mut lines = vec![
-        Line::from(vec![
-            Span::styled("Change ID: ", Style::default().bold()),
-            // Shortest unique prefix: bright magenta + bold
-            Span::styled(
-                output.change_id_prefix.clone(),
-                Style::default()
-                    .fg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            // Rest of change ID: dim/dark gray
-            Span::styled(
-                output.change_id_rest.clone(),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Commit ID: ", Style::default().bold()),
-            // Shortest unique prefix: bright yellow + bold
-            Span::styled(
-                output.commit_id_prefix.clone(),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            // Rest of commit ID: dim/dark gray
-            Span::styled(
-                output.commit_id_rest.clone(),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]),
+        styled_id_line(
+            "Change ID: ",
+            &output.change_id_prefix,
+            &output.change_id_rest,
+            Color::Magenta,
+        ),
+        styled_id_line(
+            "Commit ID: ",
+            &output.commit_id_prefix,
+            &output.commit_id_rest,
+            Color::Yellow,
+        ),
         Line::from(vec![
             Span::styled("Author:    ", Style::default().bold()),
             Span::styled(output.author.clone(), Style::default().fg(Color::Cyan)),
@@ -481,10 +448,6 @@ fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     area
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Modal overlay (confirmation dialogs)
-// ─────────────────────────────────────────────────────────────────────────────
-
 /// Render the modal overlay for confirmation dialogs.
 fn render_modal_overlay(frame: &mut Frame, app: &App) {
     let ModalState::Confirm(action) = &app.modal else {
@@ -535,10 +498,6 @@ fn render_modal_overlay(frame: &mut Frame, app: &App) {
     let buttons_paragraph = Paragraph::new(buttons).alignment(ratatui::layout::Alignment::Center);
     frame.render_widget(buttons_paragraph, chunks[2]);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Input overlay
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Render the input overlay for text entry.
 fn render_input_overlay(frame: &mut Frame, app: &App) {
