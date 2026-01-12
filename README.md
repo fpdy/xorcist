@@ -6,6 +6,8 @@ A TUI client for [jj (Jujutsu VCS)](https://github.com/martinvonz/jj).
 
 - **Log View** - Browse commit history with vim-like navigation
 - **Detail View** - View commit metadata and diff summary
+- **Conventional Commits** - Automatic emoji formatting (`feat:` → `✨`, `fix:` → `🩹`, etc.)
+- **Incremental Loading** - Load history on demand (default: 500 entries, auto-loads more as needed)
 - **Confirmation Dialogs** - Safe destructive operations (abandon, squash, push, undo)
 - **Bookmark Management** - Set bookmarks on any revision
 - **Git Integration** - Fetch and push with jj's git backend
@@ -31,9 +33,14 @@ cp target/release/xor ~/.local/bin/
 # Navigate to a jj repository and run
 cd /path/to/jj-repo
 xor
+
+# Options
+xor -n 100      # Load only 100 entries initially (default: 500)
+xor --all       # Load entire history at startup (may be slow)
 ```
 
 xorcist automatically detects the jj repository root by walking up the directory tree.
+When scrolling near the end of the log, additional entries are loaded automatically.
 
 ## Key Bindings
 
@@ -45,8 +52,8 @@ xorcist automatically detects the jj repository root by walking up the directory
 | `k` / `↑` | Move up |
 | `g` / `Home` | Go to first entry |
 | `G` / `End` | Go to last entry |
-| `Ctrl+d` / `PageDown` | Page down |
-| `Ctrl+u` / `PageUp` | Page up |
+| `Ctrl+d` / `PageDown` | Scroll down (10 lines) |
+| `Ctrl+u` / `PageUp` | Scroll up (10 lines) |
 
 ### Actions
 
