@@ -1,18 +1,16 @@
 //! UI rendering with ratatui.
 
+use ansi_to_tui::IntoText;
 use ratatui::{
     Frame,
     layout::{Constraint, Flex, Layout, Position, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{
-        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
-        ScrollbarOrientation, ScrollbarState,
-    },
+    style::{Color, Modifier, Style, Stylize},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
 use crate::app::{App, InputMode, ModalState, View};
-use crate::jj::{DiffStatus, LogEntry, ShowOutput};
+use crate::jj::{DiffStatus, ShowOutput};
 
 /// Render the entire UI based on current view.
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -38,7 +36,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 /// Render the log view.
-fn render_log_view(frame: &mut Frame, app: &App) {
+fn render_log_view(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::vertical([
         Constraint::Length(1), // Title bar
         Constraint::Min(3),    // Log list
@@ -58,93 +56,56 @@ fn render_title_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(title_bar, area);
 }
 
-/// Render the log list.
-fn render_log_list(frame: &mut Frame, area: Rect, app: &App) {
-    let items: Vec<ListItem> = app
-        .entries
-        .iter()
-        .enumerate()
-        .map(|(i, entry)| create_list_item(entry, i == app.selected))
-        .collect();
+/// Render the log list with ANSI graph output.
+fn render_log_list(frame: &mut Frame, area: Rect, app: &mut App) {
+    let viewport_height = area.height as usize;
 
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::NONE))
-        .highlight_style(
-            Style::default()
-                .bg(Color::Indexed(236)) // Dark blue-gray, distinct from DarkGray text
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
+    // Ensure selected line is visible
+    app.ensure_selected_visible(viewport_height);
 
-    let mut state = ListState::default();
-    state.select(Some(app.selected));
+    // Get the selected line index for highlighting
+    let selected_line_idx = app.selected_line_index();
 
-    frame.render_stateful_widget(list, area, &mut state);
-}
+    // Build text from graph lines
+    let mut lines: Vec<Line> = Vec::new();
 
-/// Create a list item from a log entry.
-///
-/// When `is_selected` is true, dim colors are brightened for visibility
-/// against the highlight background.
-fn create_list_item<'a>(entry: &'a LogEntry, is_selected: bool) -> ListItem<'a> {
-    // Use brighter colors when selected to ensure visibility against highlight bg
-    // Indexed(245) is slightly dimmer than Gray but still visible on dark background
-    let dim_color = if is_selected {
-        Color::Indexed(245)
-    } else {
-        Color::DarkGray
-    };
+    for (idx, graph_line) in app.graph_log.lines.iter().enumerate() {
+        // Parse ANSI codes to ratatui Line
+        let text = graph_line
+            .raw
+            .as_bytes()
+            .into_text()
+            .unwrap_or_else(|_| Text::raw(&graph_line.raw));
 
-    let mut spans = Vec::new();
+        // Get the first line (should only be one line per graph_line)
+        let mut line = if text.lines.is_empty() {
+            Line::raw("")
+        } else {
+            text.lines.into_iter().next().unwrap()
+        };
 
-    // Shortest unique prefix: bright magenta + bold
-    spans.push(Span::styled(
-        &entry.change_id_prefix,
-        Style::default()
-            .fg(Color::Magenta)
-            .add_modifier(Modifier::BOLD),
-    ));
-    // Rest of change ID: dim color (brightened when selected)
-    spans.push(Span::styled(
-        &entry.change_id_rest,
-        Style::default().fg(dim_color),
-    ));
-    spans.push(Span::raw(" "));
+        // Highlight selected line
+        if Some(idx) == selected_line_idx {
+            // Apply background color to indicate selection
+            line = line.bg(Color::Indexed(236)).bold();
+        }
 
-    // Add bookmarks if present
-    if !entry.bookmarks.is_empty() {
-        let bookmarks_str = entry.bookmarks.join(" ");
-        spans.push(Span::styled(
-            format!("[{bookmarks_str}] "),
-            Style::default().fg(Color::Cyan),
-        ));
+        lines.push(line);
     }
 
-    // Description (with conventional commits emoji conversion)
-    let display_desc = format_description(&entry.description);
-    let desc_style = if entry.is_empty {
-        Style::default().fg(dim_color).italic()
-    } else {
-        Style::default()
-    };
-    spans.push(Span::styled(display_desc, desc_style));
+    let paragraph = Paragraph::new(lines).scroll((app.scroll_offset as u16, 0));
+    frame.render_widget(paragraph, area);
 
-    // Author and timestamp (right-aligned conceptually, but we just append)
-    spans.push(Span::raw(" "));
-    spans.push(Span::styled(
-        format!("{} ", entry.author),
-        Style::default().fg(Color::Cyan),
-    ));
-    spans.push(Span::styled(
-        &entry.timestamp,
-        Style::default().fg(dim_color),
-    ));
-
-    ListItem::new(Line::from(spans))
-}
-
-fn format_description(desc: &str) -> String {
-    crate::conventional::format_commit_message(desc)
+    // Scrollbar
+    let total_lines = app.line_count();
+    if total_lines > viewport_height {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+        let mut scrollbar_state = ScrollbarState::new(total_lines.saturating_sub(viewport_height))
+            .position(app.scroll_offset);
+        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    }
 }
 
 /// Render the status bar for log view.
@@ -170,9 +131,9 @@ fn render_log_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         // Build help text with entry count info
         let count_info = if app.has_more_entries {
-            format!("[{}+ entries] ", app.entries.len())
+            format!("[{}+ commits] ", app.commit_count())
         } else {
-            format!("[{} entries] ", app.entries.len())
+            format!("[{} commits] ", app.commit_count())
         };
         let help = format!(
             " {count_info}n: new  e: edit  d: describe  b: bookmark  Enter: show  q: quit  ?: help "
@@ -311,7 +272,7 @@ fn build_detail_lines(output: &ShowOutput) -> Vec<Line<'static>> {
     let mut desc_lines = output.description.lines();
     if let Some(first_line) = desc_lines.next() {
         // Apply conventional commits emoji to first line only
-        let formatted = format_description(first_line);
+        let formatted = crate::conventional::format_commit_message(first_line);
         lines.push(Line::raw(formatted));
         // Remaining lines as-is
         for desc_line in desc_lines {
