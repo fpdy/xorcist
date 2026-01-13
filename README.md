@@ -21,11 +21,24 @@ A TUI client for [jj (Jujutsu VCS)](https://github.com/martinvonz/jj).
 
 ## Installation
 
+### From crates.io (recommended)
+
 ```bash
-git clone https://github.com/user/xorcist.git
+cargo install xorcist
+```
+
+### From source (GitHub)
+
+```bash
+cargo install --git https://github.com/fpdy/xorcist
+```
+
+### From local source
+
+```bash
+git clone https://github.com/fpdy/xorcist.git
 cd xorcist
-cargo build --release
-cp target/release/xor ~/.local/bin/
+cargo install --path .
 ```
 
 ## Usage
