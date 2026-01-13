@@ -4,7 +4,9 @@ use tui_input::Input;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::error::XorcistError;
-use crate::jj::{JjRunner, LogEntry, ShowOutput, fetch_log, fetch_log_after, fetch_show};
+use crate::jj::{
+    GraphLog, JjRunner, ShowOutput, fetch_graph_log, fetch_graph_log_after, fetch_show,
+};
 
 /// Current view mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -136,10 +138,12 @@ const LOAD_MORE_THRESHOLD: usize = 50;
 
 /// Application state.
 pub struct App {
-    /// Log entries to display.
-    pub entries: Vec<LogEntry>,
-    /// Currently selected index.
+    /// Graph log with all lines and commit metadata.
+    pub graph_log: GraphLog,
+    /// Currently selected commit index (in commit_line_indices).
     pub selected: usize,
+    /// Scroll offset for the log view (line-based).
+    pub scroll_offset: usize,
     /// Whether the app should quit.
     pub should_quit: bool,
     /// Repository root path.
@@ -171,11 +175,12 @@ pub struct App {
 }
 
 impl App {
-    /// Create a new App with the given log entries.
-    pub fn new(entries: Vec<LogEntry>, repo_root: String, runner: JjRunner) -> Self {
+    /// Create a new App with the given graph log.
+    pub fn new(graph_log: GraphLog, repo_root: String, runner: JjRunner) -> Self {
         Self {
-            entries,
+            graph_log,
             selected: 0,
+            scroll_offset: 0,
             should_quit: false,
             repo_root,
             view: View::default(),
@@ -200,13 +205,48 @@ impl App {
         // Otherwise, assume more entries exist if we loaded exactly the limit
         self.has_more_entries = match limit {
             None => false,
-            Some(n) => self.entries.len() >= n,
+            Some(n) => self.graph_log.commit_count() >= n,
         };
+    }
+
+    /// Get the number of commits in the log.
+    pub fn commit_count(&self) -> usize {
+        self.graph_log.commit_count()
+    }
+
+    /// Get the total number of lines in the graph.
+    pub fn line_count(&self) -> usize {
+        self.graph_log.lines.len()
+    }
+
+    /// Get the line index for the currently selected commit.
+    pub fn selected_line_index(&self) -> Option<usize> {
+        self.graph_log.line_index_for_selection(self.selected)
+    }
+
+    /// Get the change_id for the currently selected commit.
+    pub fn selected_change_id(&self) -> Option<&str> {
+        self.graph_log.change_id_for_selection(self.selected)
+    }
+
+    /// Ensure the selected line is visible in the viewport.
+    pub fn ensure_selected_visible(&mut self, viewport_height: usize) {
+        if let Some(line_idx) = self.selected_line_index() {
+            // If selected line is above viewport, scroll up
+            if line_idx < self.scroll_offset {
+                self.scroll_offset = line_idx;
+            }
+            // If selected line is below viewport, scroll down
+            else if line_idx >= self.scroll_offset + viewport_height {
+                self.scroll_offset = line_idx.saturating_sub(viewport_height - 1);
+            }
+        }
     }
 
     /// Move selection down.
     pub fn select_next(&mut self) {
-        if !self.entries.is_empty() && self.selected < self.entries.len() - 1 {
+        let count = self.commit_count();
+        if count > 0 && self.selected < count - 1 {
             self.selected += 1;
         }
     }
@@ -225,18 +265,20 @@ impl App {
 
     /// Jump to the last entry.
     pub fn select_last(&mut self) {
-        if !self.entries.is_empty() {
-            self.selected = self.entries.len() - 1;
+        let count = self.commit_count();
+        if count > 0 {
+            self.selected = count - 1;
         }
     }
 
     /// Page down (move by visible height).
     pub fn page_down(&mut self, page_size: usize) {
-        if self.entries.is_empty() {
+        let count = self.commit_count();
+        if count == 0 {
             return;
         }
         let new_selected = self.selected.saturating_add(page_size);
-        self.selected = new_selected.min(self.entries.len() - 1);
+        self.selected = new_selected.min(count - 1);
     }
 
     /// Page up (move by visible height).
@@ -265,7 +307,7 @@ impl App {
             return false;
         }
 
-        let entries_from_end = self.entries.len().saturating_sub(self.selected);
+        let entries_from_end = self.commit_count().saturating_sub(self.selected);
         entries_from_end <= LOAD_MORE_THRESHOLD
     }
 
@@ -278,30 +320,32 @@ impl App {
     /// Actually load more entries.
     /// Should be called after start_loading() and a redraw.
     pub fn load_more_entries(&mut self) -> Result<bool, XorcistError> {
-        // Get the last entry's change_id to use as anchor
-        let Some(last_entry) = self.entries.last() else {
+        // Get the last commit's change_id to use as anchor
+        let last_selection = self.commit_count().saturating_sub(1);
+        let Some(after_change_id) = self.graph_log.change_id_for_selection(last_selection) else {
             self.is_loading_more = false;
             return Ok(false);
         };
-        let after_change_id = last_entry.change_id.clone();
+        let after_change_id = after_change_id.to_string();
 
         // Fetch more entries
         let batch_size = self.log_limit.unwrap_or(DEFAULT_BATCH_SIZE);
-        let additional = fetch_log_after(&self.runner, &after_change_id, batch_size)?;
+        let additional = fetch_graph_log_after(&self.runner, &after_change_id, batch_size)?;
 
         self.is_loading_more = false;
 
-        if additional.is_empty() {
+        if additional.is_empty() || additional.commit_count() == 0 {
             self.has_more_entries = false;
             return Ok(false);
         }
 
         // If we got fewer than requested, we've reached the end
-        if additional.len() < batch_size {
+        if additional.commit_count() < batch_size {
             self.has_more_entries = false;
         }
 
-        self.entries.extend(additional);
+        // Merge additional lines into existing graph_log
+        self.graph_log.extend(additional);
         Ok(true)
     }
 
@@ -322,8 +366,8 @@ impl App {
 
     /// Open detail view for selected entry.
     pub fn open_detail(&mut self) -> Result<(), XorcistError> {
-        if let Some(entry) = self.entries.get(self.selected) {
-            let show_output = fetch_show(&self.runner, &entry.change_id)?;
+        if let Some(change_id) = self.selected_change_id() {
+            let show_output = fetch_show(&self.runner, change_id)?;
             self.detail_state = Some(DetailState {
                 show_output,
                 scroll: 0,
@@ -365,17 +409,13 @@ impl App {
         }
     }
 
-    /// Get the currently selected entry.
-    pub fn selected_entry(&self) -> Option<&LogEntry> {
-        self.entries.get(self.selected)
-    }
-
     /// Refresh log entries.
     pub fn refresh_log(&mut self) -> Result<(), XorcistError> {
-        self.entries = fetch_log(&self.runner, self.log_limit)?;
+        self.graph_log = fetch_graph_log(&self.runner, self.log_limit)?;
         // Clamp selection to valid range
-        if !self.entries.is_empty() && self.selected >= self.entries.len() {
-            self.selected = self.entries.len() - 1;
+        let count = self.commit_count();
+        if count > 0 && self.selected >= count {
+            self.selected = count - 1;
         }
         Ok(())
     }
@@ -407,21 +447,38 @@ impl App {
 
     /// Show confirmation dialog for abandon.
     pub fn show_abandon_confirm(&mut self) {
-        if let Some(entry) = self.selected_entry() {
+        if let Some(change_id) = self.selected_change_id() {
+            let description = self.selected_description().unwrap_or_default();
             self.modal = ModalState::Confirm(PendingAction::Abandon {
-                change_id: entry.change_id.clone(),
-                description: entry.description.clone(),
+                change_id: change_id.to_string(),
+                description,
             });
         }
     }
 
     /// Show confirmation dialog for squash.
     pub fn show_squash_confirm(&mut self) {
-        if let Some(entry) = self.selected_entry() {
+        if let Some(change_id) = self.selected_change_id() {
+            let description = self.selected_description().unwrap_or_default();
             self.modal = ModalState::Confirm(PendingAction::Squash {
-                change_id: entry.change_id.clone(),
-                description: entry.description.clone(),
+                change_id: change_id.to_string(),
+                description,
             });
+        }
+    }
+
+    /// Get the description of the selected commit (parsed from plain text).
+    fn selected_description(&self) -> Option<String> {
+        let line_idx = self.selected_line_index()?;
+        let line = &self.graph_log.lines[line_idx];
+        // The description is the last part of the line after change_id, author, timestamp
+        // Format: "change_id author timestamp description..."
+        // We'll extract everything after the third space-separated token
+        let parts: Vec<&str> = line.plain.split_whitespace().collect();
+        if parts.len() > 3 {
+            Some(parts[3..].join(" "))
+        } else {
+            None
         }
     }
 
@@ -511,10 +568,10 @@ impl App {
 
     /// Execute `jj new` on the selected revision.
     pub fn execute_new(&mut self) -> Result<(), XorcistError> {
-        let Some(entry) = self.selected_entry() else {
+        let Some(change_id) = self.selected_change_id() else {
             return Ok(());
         };
-        let change_id = entry.change_id.clone();
+        let change_id = change_id.to_string();
         let result = self.runner.execute_new(&change_id);
         self.handle_command_result(result);
         self.refresh_log()?;
@@ -523,10 +580,10 @@ impl App {
 
     /// Execute `jj new -m` with the given message.
     pub fn execute_new_with_message(&mut self, message: &str) -> Result<(), XorcistError> {
-        let Some(entry) = self.selected_entry() else {
+        let Some(change_id) = self.selected_change_id() else {
             return Ok(());
         };
-        let change_id = entry.change_id.clone();
+        let change_id = change_id.to_string();
         let result = if message.is_empty() {
             self.runner.execute_new(&change_id)
         } else {
@@ -539,10 +596,10 @@ impl App {
 
     /// Execute `jj edit` on the selected revision.
     pub fn execute_edit(&mut self) -> Result<(), XorcistError> {
-        let Some(entry) = self.selected_entry() else {
+        let Some(change_id) = self.selected_change_id() else {
             return Ok(());
         };
-        let change_id = entry.change_id.clone();
+        let change_id = change_id.to_string();
         let result = self.runner.execute_edit(&change_id);
         self.handle_command_result(result);
         self.refresh_log()?;
@@ -551,10 +608,10 @@ impl App {
 
     /// Execute `jj describe -m` on the selected revision.
     pub fn execute_describe(&mut self, message: &str) -> Result<(), XorcistError> {
-        let Some(entry) = self.selected_entry() else {
+        let Some(change_id) = self.selected_change_id() else {
             return Ok(());
         };
-        let change_id = entry.change_id.clone();
+        let change_id = change_id.to_string();
         let result = self.runner.execute_describe(&change_id, message);
         self.handle_command_result(result);
         self.refresh_log()?;
@@ -570,10 +627,10 @@ impl App {
             });
             return Ok(());
         }
-        let Some(entry) = self.selected_entry() else {
+        let Some(change_id) = self.selected_change_id() else {
             return Ok(());
         };
-        let change_id = entry.change_id.clone();
+        let change_id = change_id.to_string();
         let result = self.runner.execute_bookmark_set(name, &change_id);
         self.handle_command_result(result);
         self.refresh_log()?;
@@ -584,22 +641,36 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jj::GraphLog;
     use std::path::Path;
 
-    fn make_entry(id: &str) -> LogEntry {
-        LogEntry {
-            change_id: id.to_string(),
-            change_id_prefix: id.to_string(),
-            change_id_rest: String::new(),
-            commit_id: format!("commit_{id}"),
-            commit_id_prefix: format!("commit_{id}"),
-            commit_id_rest: String::new(),
-            author: "Test".to_string(),
-            timestamp: "now".to_string(),
-            description: format!("Entry {id}"),
-            is_empty: false,
-            bookmarks: vec![],
+    fn make_graph_log(count: usize) -> GraphLog {
+        // Create a simple graph log with N commits
+        // change_id must be 8 lowercase letters to be parsed correctly
+        // Use letter-only IDs (a-z) since the regex requires [a-z]{8}
+        let mut output = String::new();
+        for i in 0..count {
+            // Generate 8-char lowercase letter ID using base-26 encoding
+            let id = index_to_change_id(i);
+            output.push_str(&format!("@  {id} Author {i}h Entry {i}\n"));
         }
+        GraphLog::from_output(&output)
+    }
+
+    fn index_to_change_id(i: usize) -> String {
+        // Generate an 8-character ID using only lowercase letters a-z
+        let mut id = String::with_capacity(8);
+        let mut n = i;
+        for _ in 0..8 {
+            let ch = (b'a' + (n % 26) as u8) as char;
+            id.insert(0, ch);
+            n /= 26;
+        }
+        id
+    }
+
+    fn expected_change_id(i: usize) -> String {
+        index_to_change_id(i)
     }
 
     fn make_runner() -> JjRunner {
@@ -608,10 +679,11 @@ mod tests {
 
     #[test]
     fn test_navigation() {
-        let entries = vec![make_entry("1"), make_entry("2"), make_entry("3")];
-        let mut app = App::new(entries, "/repo".to_string(), make_runner());
+        let graph_log = make_graph_log(3);
+        let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
 
         assert_eq!(app.selected, 0);
+        assert_eq!(app.commit_count(), 3);
 
         app.select_next();
         assert_eq!(app.selected, 1);
@@ -635,8 +707,11 @@ mod tests {
 
     #[test]
     fn test_page_navigation() {
-        let entries: Vec<_> = (0..20).map(|i| make_entry(&i.to_string())).collect();
-        let mut app = App::new(entries, "/repo".to_string(), make_runner());
+        let count = 20;
+        let graph_log = make_graph_log(count);
+        let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+
+        assert_eq!(app.commit_count(), count);
 
         app.page_down(5);
         assert_eq!(app.selected, 5);
@@ -649,7 +724,7 @@ mod tests {
 
         // Page down past the end
         app.page_down(100);
-        assert_eq!(app.selected, 19);
+        assert_eq!(app.selected, count - 1);
 
         // Page up past the beginning
         app.page_up(100);
@@ -658,7 +733,8 @@ mod tests {
 
     #[test]
     fn test_empty_entries() {
-        let mut app = App::new(vec![], "/repo".to_string(), make_runner());
+        let graph_log = GraphLog::default();
+        let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
 
         // Should not panic on empty list
         app.select_next();
@@ -673,8 +749,8 @@ mod tests {
 
     #[test]
     fn test_view_transitions() {
-        let entries = vec![make_entry("1")];
-        let mut app = App::new(entries, "/repo".to_string(), make_runner());
+        let graph_log = make_graph_log(1);
+        let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
 
         assert_eq!(app.view, View::Log);
         assert!(app.detail_state.is_none());
@@ -707,7 +783,8 @@ mod tests {
 
     #[test]
     fn test_detail_scroll() {
-        let mut app = App::new(vec![], "/repo".to_string(), make_runner());
+        let graph_log = GraphLog::default();
+        let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
         app.detail_state = Some(DetailState {
             show_output: ShowOutput {
                 change_id: "abc123".to_string(),
@@ -739,7 +816,8 @@ mod tests {
 
     #[test]
     fn test_set_detail_content_height() {
-        let mut app = App::new(vec![], "/repo".to_string(), make_runner());
+        let graph_log = GraphLog::default();
+        let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
         app.detail_state = Some(DetailState {
             show_output: ShowOutput {
                 change_id: "abc123".to_string(),
@@ -802,8 +880,8 @@ mod tests {
 
     #[test]
     fn test_should_load_more_not_pending() {
-        let entries: Vec<_> = (0..100).map(|i| make_entry(&i.to_string())).collect();
-        let mut app = App::new(entries, "/repo".to_string(), make_runner());
+        let graph_log = make_graph_log(100);
+        let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
         app.set_log_limit(Some(100));
 
         // No pending request
@@ -812,9 +890,14 @@ mod tests {
 
     #[test]
     fn test_should_load_more_near_end() {
-        let entries: Vec<_> = (0..100).map(|i| make_entry(&i.to_string())).collect();
-        let mut app = App::new(entries, "/repo".to_string(), make_runner());
-        app.set_log_limit(Some(100));
+        let count = 100;
+        let graph_log = make_graph_log(count);
+        let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+        app.set_log_limit(Some(count));
+
+        // Verify we have the expected number of commits
+        assert_eq!(app.commit_count(), count);
+        assert!(app.has_more_entries);
 
         // Move near the end and request load
         app.selected = 95; // 5 from end, within LOAD_MORE_THRESHOLD (50)
@@ -825,8 +908,8 @@ mod tests {
 
     #[test]
     fn test_should_load_more_not_near_end() {
-        let entries: Vec<_> = (0..100).map(|i| make_entry(&i.to_string())).collect();
-        let mut app = App::new(entries, "/repo".to_string(), make_runner());
+        let graph_log = make_graph_log(100);
+        let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
         app.set_log_limit(Some(100));
 
         // Stay at the beginning
@@ -838,8 +921,8 @@ mod tests {
 
     #[test]
     fn test_should_load_more_all_mode() {
-        let entries: Vec<_> = (0..100).map(|i| make_entry(&i.to_string())).collect();
-        let mut app = App::new(entries, "/repo".to_string(), make_runner());
+        let graph_log = make_graph_log(100);
+        let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
         app.set_log_limit(None); // --all mode
 
         app.selected = 95;
@@ -851,8 +934,8 @@ mod tests {
 
     #[test]
     fn test_should_load_more_no_more_entries() {
-        let entries: Vec<_> = (0..50).map(|i| make_entry(&i.to_string())).collect();
-        let mut app = App::new(entries, "/repo".to_string(), make_runner());
+        let graph_log = make_graph_log(50);
+        let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
         app.set_log_limit(Some(100));
 
         // Fewer entries than limit means no more available
@@ -866,9 +949,13 @@ mod tests {
 
     #[test]
     fn test_start_loading_clears_pending() {
-        let entries: Vec<_> = (0..100).map(|i| make_entry(&i.to_string())).collect();
-        let mut app = App::new(entries, "/repo".to_string(), make_runner());
-        app.set_log_limit(Some(100));
+        let count = 100;
+        let graph_log = make_graph_log(count);
+        let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+        app.set_log_limit(Some(count));
+
+        assert_eq!(app.commit_count(), count);
+        assert!(app.has_more_entries);
 
         app.selected = 95;
         app.request_load_more_check();
@@ -877,5 +964,57 @@ mod tests {
         app.start_loading();
         assert!(app.is_loading_more);
         assert!(!app.should_load_more()); // pending cleared, is_loading_more blocks
+    }
+
+    #[test]
+    fn test_selected_change_id() {
+        let graph_log = make_graph_log(3);
+        let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+
+        assert_eq!(
+            app.selected_change_id(),
+            Some(expected_change_id(0).as_str())
+        );
+
+        app.select_next();
+        assert_eq!(
+            app.selected_change_id(),
+            Some(expected_change_id(1).as_str())
+        );
+
+        app.select_next();
+        assert_eq!(
+            app.selected_change_id(),
+            Some(expected_change_id(2).as_str())
+        );
+    }
+
+    #[test]
+    fn test_ensure_selected_visible() {
+        let graph_log = make_graph_log(20);
+        let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+
+        // Initial state
+        assert_eq!(app.scroll_offset, 0);
+
+        // Select item beyond viewport
+        app.selected = 15;
+        app.ensure_selected_visible(10);
+
+        // Get the actual line index for the selected commit
+        let line_idx = app.selected_line_index().unwrap();
+        // Selected line should be visible in viewport of 10
+        assert!(
+            app.scroll_offset <= line_idx,
+            "scroll_offset {} should be <= line_idx {}",
+            app.scroll_offset,
+            line_idx
+        );
+        assert!(
+            app.scroll_offset + 10 > line_idx,
+            "scroll_offset {} + 10 should be > line_idx {}",
+            app.scroll_offset,
+            line_idx
+        );
     }
 }

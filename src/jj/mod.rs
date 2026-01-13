@@ -1,11 +1,11 @@
 //! jj VCS integration module.
 
-pub mod log;
+pub mod graph_log;
 pub mod repo;
 pub mod runner;
 pub mod show;
 
-pub use log::{LogEntry, fetch_log, fetch_log_after};
+pub use graph_log::{GraphLog, fetch_graph_log, fetch_graph_log_after};
 pub use repo::find_jj_repo;
 pub use runner::JjRunner;
 pub use show::{DiffStatus, ShowOutput, fetch_show};

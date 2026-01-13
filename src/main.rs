@@ -15,7 +15,7 @@ use tui_input::backend::crossterm::EventHandler;
 
 use app::{App, InputMode, View};
 use error::XorcistError;
-use jj::{JjRunner, fetch_log, find_jj_repo};
+use jj::{JjRunner, fetch_graph_log, find_jj_repo};
 
 /// A TUI client for jj (Jujutsu VCS).
 #[derive(Parser, Debug)]
@@ -49,8 +49,8 @@ fn main() -> Result<()> {
     // Determine limit: --all overrides --limit
     let limit = if args.all { None } else { Some(args.limit) };
 
-    // Fetch log entries
-    let entries = fetch_log(&runner, limit).context("failed to fetch jj log")?;
+    // Fetch graph log
+    let graph_log = fetch_graph_log(&runner, limit).context("failed to fetch jj log")?;
 
     // Create app state
     let repo_root_display = repo
@@ -59,7 +59,7 @@ fn main() -> Result<()> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| repo.root.to_string_lossy().to_string());
 
-    let mut app = App::new(entries, repo_root_display, runner);
+    let mut app = App::new(graph_log, repo_root_display, runner);
     app.set_log_limit(limit);
 
     // Run TUI
