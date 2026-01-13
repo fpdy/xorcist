@@ -26,6 +26,18 @@ static CHANGE_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[^a-z]*([a-z]{8})\s").expect("Invalid regex pattern")
 });
 
+/// Regex pattern for extracting all fields from a commit line.
+/// Format: `change_id author timestamp description`
+static COMMIT_LINE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    // Match: graph_symbols change_id(8 letters) author timestamp description
+    // - graph_symbols: non-letter characters at the start
+    // - change_id: exactly 8 lowercase letters
+    // - author: non-whitespace characters
+    // - timestamp: non-whitespace characters (e.g., "1h", "2d", "3mo")
+    // - description: everything after (may be empty)
+    Regex::new(r"^[^a-z]*([a-z]{8})\s+(\S+)\s+(\S+)\s*(.*)$").expect("Invalid regex pattern")
+});
+
 /// Regex pattern to strip ANSI escape sequences.
 static ANSI_STRIP_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*m").expect("Invalid ANSI regex pattern"));
@@ -39,6 +51,9 @@ pub struct GraphLine {
     pub plain: String,
     /// Change ID extracted from this line, if any.
     pub change_id: Option<String>,
+    /// Description extracted from this line, if any.
+    /// Empty string if the commit has no description.
+    pub description: Option<String>,
     /// Line index in the full output.
     pub line_index: usize,
 }
@@ -47,11 +62,12 @@ impl GraphLine {
     /// Create a new GraphLine from raw text.
     fn new(raw: String, line_index: usize) -> Self {
         let plain = strip_ansi(&raw);
-        let change_id = extract_change_id(&plain);
+        let (change_id, description) = extract_commit_fields(&plain);
         Self {
             raw,
             plain,
             change_id,
+            description,
             line_index,
         }
     }
@@ -137,10 +153,25 @@ fn strip_ansi(s: &str) -> String {
 /// Extract change_id from a plain text line.
 ///
 /// The change_id is the first 8 lowercase letters after graph symbols.
+#[allow(dead_code)]
 fn extract_change_id(plain: &str) -> Option<String> {
     CHANGE_ID_REGEX
         .captures(plain)
         .map(|cap| cap[1].to_string())
+}
+
+/// Extract change_id and description from a plain text commit line.
+///
+/// Returns (change_id, description) where description is Some for commit lines.
+fn extract_commit_fields(plain: &str) -> (Option<String>, Option<String>) {
+    match COMMIT_LINE_REGEX.captures(plain) {
+        Some(cap) => {
+            let change_id = cap[1].to_string();
+            let description = cap.get(4).map(|m| m.as_str().to_string());
+            (Some(change_id), description)
+        }
+        None => (None, None),
+    }
 }
 
 /// Fetch graph log from jj with colored output.
@@ -251,7 +282,47 @@ mod tests {
 
         assert!(line.is_commit_line());
         assert_eq!(line.change_id, Some("qzmtztvn".to_string()));
+        assert_eq!(line.description, Some("feat: test".to_string()));
         assert_eq!(line.line_index, 0);
+    }
+
+    #[test]
+    fn test_graph_line_empty_description() {
+        let raw = "@  qzmtztvn Author 1h ";
+        let line = GraphLine::new(raw.to_string(), 0);
+
+        assert!(line.is_commit_line());
+        assert_eq!(line.change_id, Some("qzmtztvn".to_string()));
+        assert_eq!(line.description, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_graph_line_no_description() {
+        // Line with no trailing space - description should still be captured as empty
+        let raw = "@  qzmtztvn Author 1h";
+        let line = GraphLine::new(raw.to_string(), 0);
+
+        assert!(line.is_commit_line());
+        assert_eq!(line.change_id, Some("qzmtztvn".to_string()));
+        assert_eq!(line.description, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_extract_commit_fields() {
+        // Normal commit with description
+        let (cid, desc) = extract_commit_fields("@  qzmtztvn Author 1h feat: add feature");
+        assert_eq!(cid, Some("qzmtztvn".to_string()));
+        assert_eq!(desc, Some("feat: add feature".to_string()));
+
+        // Commit with empty description
+        let (cid, desc) = extract_commit_fields("@  qzmtztvn Author 1h ");
+        assert_eq!(cid, Some("qzmtztvn".to_string()));
+        assert_eq!(desc, Some("".to_string()));
+
+        // Non-commit line (graph branch)
+        let (cid, desc) = extract_commit_fields("├─╮");
+        assert_eq!(cid, None);
+        assert_eq!(desc, None);
     }
 
     #[test]

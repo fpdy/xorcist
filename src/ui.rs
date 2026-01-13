@@ -84,6 +84,11 @@ fn render_log_list(frame: &mut Frame, area: Rect, app: &mut App) {
             text.lines.into_iter().next().unwrap()
         };
 
+        // Transform description for commit lines
+        if let Some(ref desc) = graph_line.description {
+            line = transform_line_description(line, &graph_line.plain, desc);
+        }
+
         // Highlight selected line
         if Some(idx) == selected_line_idx {
             // Apply background color to indicate selection
@@ -106,6 +111,72 @@ fn render_log_list(frame: &mut Frame, area: Rect, app: &mut App) {
             .position(app.scroll_offset);
         frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
+}
+
+/// Transform a line's description part.
+///
+/// - Empty description: replace with "(no desc)" in DarkGray italic
+/// - Conventional commits: convert to emoji format
+fn transform_line_description<'a>(line: Line<'a>, plain: &str, description: &str) -> Line<'a> {
+    // Handle empty description: keep all original spans and append "(no desc)"
+    if description.is_empty() {
+        let mut spans: Vec<Span<'a>> = line.spans.into_iter().collect();
+        // Prevent selection highlight from filling this separator space.
+        // (Spans with explicit bg=Reset override the line background.)
+        spans.push(Span::styled(" ", Style::default().bg(Color::Reset)));
+        spans.push(Span::styled(
+            "(no desc)",
+            Style::default().fg(Color::DarkGray).italic(),
+        ));
+        return Line::from(spans);
+    }
+
+    // Find the position of description in the plain text
+    let desc_start = match plain.find(description) {
+        Some(pos) => pos,
+        None => return line, // Description not found, return unchanged
+    };
+
+    // Calculate prefix (everything before description)
+    let prefix_plain = &plain[..desc_start];
+
+    // Find how many characters to keep from the original spans
+    let mut prefix_char_count = 0;
+    let mut prefix_spans: Vec<Span<'a>> = Vec::new();
+
+    for span in line.spans.into_iter() {
+        let span_len = span.content.chars().count();
+        let prefix_remaining = prefix_plain
+            .chars()
+            .count()
+            .saturating_sub(prefix_char_count);
+
+        if prefix_remaining == 0 {
+            // We've collected all prefix spans, skip the rest (description part)
+            break;
+        } else if span_len <= prefix_remaining {
+            // This entire span is part of the prefix
+            prefix_char_count += span_len;
+            prefix_spans.push(span);
+        } else {
+            // This span partially overlaps - split it
+            let chars: String = span.content.chars().take(prefix_remaining).collect();
+            prefix_spans.push(Span::styled(chars, span.style));
+            break;
+        }
+    }
+
+    // Apply conventional commits emoji transformation
+    let transformed = crate::conventional::format_commit_message(description);
+    if transformed != description {
+        // Conventional commit was transformed - use default style for emoji text
+        prefix_spans.push(Span::raw(transformed));
+    } else {
+        // Not a conventional commit - keep original style (just use raw text)
+        prefix_spans.push(Span::raw(description.to_string()));
+    }
+
+    Line::from(prefix_spans)
 }
 
 /// Render the status bar for log view.
