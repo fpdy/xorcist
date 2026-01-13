@@ -5,6 +5,7 @@ A TUI client for [jj (Jujutsu VCS)](https://github.com/martinvonz/jj).
 ## Features
 
 - **Log View** - Browse commit history with vim-like navigation
+- **Native Graph Display** - jj's graph visualization with full ANSI color support
 - **Detail View** - View commit metadata and diff summary
 - **Conventional Commits** - Automatic emoji formatting (`feat:` → `✨`, `fix:` → `🩹`, etc.)
 - **Incremental Loading** - Load history on demand (default: 500 entries, auto-loads more as needed)
@@ -80,11 +81,14 @@ When scrolling near the end of the log, additional entries are loaded automatica
 
 ## Display
 
+The log view shows jj's native graph visualization with full color support:
+
 - `@` - Working copy
 - `◆` - Immutable commit
 - `○` - Regular commit
-- *Italic* - Empty commit (no changes)
+- Graph lines (`│`, `├─╮`, `├─╯`, etc.) - Branch/merge visualization
 - `[bookmark]` - Bookmarks shown in cyan
+- Conventional commit messages are displayed with emoji prefixes
 
 ## License
 
