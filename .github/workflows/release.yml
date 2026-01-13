@@ -1,0 +1,50 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    name: build and upload (${{ matrix.target }})
+    # Guard against workflow_dispatch on branches.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          # Use Intel runner to avoid cross-linking issues.
+          - os: macos-13
+            target: x86_64-apple-darwin
+          # Use Apple Silicon runner for native aarch64 builds.
+          - os: macos-14
+            target: aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+          targets: ${{ matrix.target }}
+
+      - name: build and upload release asset
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: xor
+          target: ${{ matrix.target }}
+          archive: xorcist-$tag-$target
+          include: |
+            README.md
+            LICENSE
+          checksum: sha256
+          token: ${{ secrets.GITHUB_TOKEN }}
