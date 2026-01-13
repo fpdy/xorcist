@@ -219,7 +219,7 @@ fn render_log_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 /// Truncate a message (first line only) to fit within the given display width.
 fn truncate_message(msg: &str, max_width: usize) -> String {
     let first_line = msg.lines().next().unwrap_or(msg);
-    crate::app::truncate_str(first_line, max_width)
+    crate::text::truncate_str(first_line, max_width)
 }
 
 /// Render the detail view.
