@@ -2,7 +2,7 @@
 name = "xorcist"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "A TUI client for jj (Jujutsu VCS)"
 license = "MIT"
 authors = ["aobask <123452733+fpdy@users.noreply.github.com>"]

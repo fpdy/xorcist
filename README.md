@@ -16,7 +16,7 @@ A TUI client for [jj (Jujutsu VCS)](https://github.com/martinvonz/jj).
 
 ## Requirements
 
-- **Rust** 1.85+ (Edition 2024)
+- **Rust** 1.88+ (Edition 2024)
 - **jj** 0.20+ (with `shortest()` template support)
 
 ## Installation

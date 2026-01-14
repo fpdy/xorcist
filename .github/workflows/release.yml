@@ -21,11 +21,11 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          # Use Intel runner to avoid cross-linking issues.
-          - os: macos-13
+          # Intel runner for native x86_64 macOS builds.
+          - os: macos-15-intel
             target: x86_64-apple-darwin
-          # Use Apple Silicon runner for native aarch64 builds.
-          - os: macos-14
+          # Apple Silicon runner for native aarch64 builds.
+          - os: macos-15
             target: aarch64-apple-darwin
 
     steps:
@@ -34,7 +34,7 @@ jobs:
       - name: install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.85.0
+          toolchain: 1.88.0
           targets: ${{ matrix.target }}
 
       - name: build and upload release asset
