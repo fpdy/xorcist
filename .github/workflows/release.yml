@@ -43,8 +43,6 @@ jobs:
           bin: xor
           target: ${{ matrix.target }}
           archive: xorcist-$tag-$target
-          include: |
-            README.md
-            LICENSE
+          include: README.md,LICENSE
           checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}
