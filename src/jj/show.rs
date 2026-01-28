@@ -81,6 +81,15 @@ pub fn fetch_show(runner: &JjRunner, revision: &str) -> Result<ShowOutput, Xorci
     })
 }
 
+/// Fetch diff output for a specific file in a revision.
+pub fn fetch_diff_file(
+    runner: &JjRunner,
+    revision: &str,
+    path: &str,
+) -> Result<String, XorcistError> {
+    runner.run_capture(&["diff", "-r", revision, "--color=never", "--git", "--", path])
+}
+
 /// Parsed metadata from jj log output.
 struct ShowMeta {
     change_id: String,
@@ -137,7 +146,7 @@ fn parse_show_meta(output: &str) -> Result<ShowMeta, XorcistError> {
 }
 
 /// Parse diff summary output from jj diff --summary.
-fn parse_diff_summary(output: &str) -> Vec<DiffEntry> {
+pub(crate) fn parse_diff_summary(output: &str) -> Vec<DiffEntry> {
     output
         .lines()
         .filter_map(|line| {

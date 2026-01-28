@@ -20,6 +20,7 @@ pub enum View {
     #[default]
     Log,
     Detail,
+    Diff,
 }
 
 /// Input mode for text entry.
@@ -53,6 +54,42 @@ pub struct DetailState {
     pub scroll: usize,
     /// Total content height (for scroll calculation).
     pub content_height: usize,
+}
+
+/// State for diff view.
+#[derive(Debug, Clone, Default)]
+pub struct DiffState {
+    /// Target change ID.
+    pub change_id: String,
+    /// List of changed files.
+    pub files: Vec<crate::jj::DiffEntry>,
+    /// Currently selected file index.
+    pub selected: usize,
+    /// Scroll offset for file list.
+    pub file_scroll: usize,
+    /// Diff text lines for selected file.
+    pub diff_lines: Vec<String>,
+    /// Scroll offset for diff text.
+    pub diff_scroll: usize,
+}
+
+impl DiffState {
+    /// Create a new DiffState from change_id and files.
+    pub fn new(change_id: String, files: Vec<crate::jj::DiffEntry>) -> Self {
+        Self {
+            change_id,
+            files,
+            selected: 0,
+            file_scroll: 0,
+            diff_lines: Vec::new(),
+            diff_scroll: 0,
+        }
+    }
+
+    /// Get the currently selected file, if any.
+    pub fn selected_file(&self) -> Option<&crate::jj::DiffEntry> {
+        self.files.get(self.selected)
+    }
 }
 
 /// Pending action for confirmation dialog.
@@ -134,6 +171,8 @@ pub struct App {
     pub view: View,
     /// Detail view state.
     pub detail_state: Option<DetailState>,
+    /// Diff view state.
+    pub diff_state: DiffState,
     /// Whether the help modal is shown.
     pub show_help: bool,
     /// jj command runner.
@@ -167,6 +206,7 @@ impl App {
             repo_root,
             view: View::default(),
             detail_state: None,
+            diff_state: DiffState::default(),
             show_help: false,
             runner,
             modal: ModalState::default(),
@@ -223,6 +263,11 @@ impl App {
     pub fn close_detail(&mut self) {
         self.view = View::Log;
         self.detail_state = None;
+    }
+
+    /// Close diff view and return to detail.
+    pub fn close_diff(&mut self) {
+        self.view = View::Detail;
     }
 
     /// Scroll detail view down.

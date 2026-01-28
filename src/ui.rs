@@ -17,6 +17,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     match app.view {
         View::Log => render_log_view(frame, app),
         View::Detail => render_detail_view(frame, app),
+        View::Diff => render_diff_view(frame, app),
     }
 
     // Render input overlay if in input mode
@@ -390,7 +391,148 @@ fn build_detail_lines(output: &ShowOutput) -> Vec<Line<'static>> {
 
 /// Render the status bar for detail view.
 fn render_detail_status_bar(frame: &mut Frame, area: Rect) {
-    let help_text = " j/k: scroll  Ctrl+d/u: page  q/Esc: back  ?: help ";
+    let help_text = " j/k: scroll  d: view diff  Ctrl+d/u: page  q/Esc: back  ?: help ";
+    let status_bar =
+        Paragraph::new(help_text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    frame.render_widget(status_bar, area);
+}
+
+/// Render the diff view.
+fn render_diff_view(frame: &mut Frame, app: &mut App) {
+    let chunks = Layout::vertical([
+        Constraint::Length(1), // Title bar
+        Constraint::Min(3),    // Content
+        Constraint::Length(1), // Status bar
+    ])
+    .split(frame.area());
+
+    // Title bar
+    let change_id_short = if app.diff_state.change_id.len() >= 8 {
+        &app.diff_state.change_id[..8]
+    } else {
+        &app.diff_state.change_id
+    };
+    let title = format!(" Diff: {change_id_short} ");
+    let title_bar = Paragraph::new(title).style(Style::default().bg(Color::Green).fg(Color::Black));
+    frame.render_widget(title_bar, chunks[0]);
+
+    // Content: split into file list and diff text
+    let content_chunks = Layout::horizontal([
+        Constraint::Length(40), // File list
+        Constraint::Min(1),     // Diff text
+    ])
+    .split(chunks[1]);
+
+    render_diff_file_list(frame, content_chunks[0], app);
+    render_diff_text(frame, content_chunks[1], app);
+
+    // Status bar
+    render_diff_status_bar(frame, chunks[2]);
+}
+
+/// Render the file list in diff view.
+fn render_diff_file_list(frame: &mut Frame, area: Rect, app: &mut App) {
+    let visible_height = area.height.saturating_sub(1) as usize; // Account for border title
+    app.ensure_diff_file_visible(visible_height);
+
+    let state = &app.diff_state;
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (idx, entry) in state.files.iter().enumerate() {
+        let (symbol, color) = match entry.status {
+            DiffStatus::Added => ("+", Color::Green),
+            DiffStatus::Modified => ("~", Color::Yellow),
+            DiffStatus::Deleted => ("-", Color::Red),
+            DiffStatus::Renamed => ("→", Color::Cyan),
+            DiffStatus::Copied => ("⊕", Color::Blue),
+        };
+
+        let is_selected = idx == state.selected;
+        let path_style = if is_selected {
+            Style::default().bg(Color::Indexed(236)).bold()
+        } else {
+            Style::default()
+        };
+
+        let line = Line::from(vec![
+            Span::styled(format!(" {symbol} "), Style::default().fg(color).bold()),
+            Span::styled(entry.path.clone(), path_style),
+        ]);
+        lines.push(if is_selected {
+            line.bg(Color::Indexed(236))
+        } else {
+            line
+        });
+    }
+
+    if state.files.is_empty() {
+        lines.push(Line::styled(
+            "  (no changes)",
+            Style::default().fg(Color::DarkGray).italic(),
+        ));
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::RIGHT).title(" Files "))
+        .scroll((state.file_scroll as u16, 0));
+    frame.render_widget(paragraph, area);
+}
+
+/// Render the diff text in diff view.
+fn render_diff_text(frame: &mut Frame, area: Rect, app: &mut App) {
+    let visible_height = area.height.saturating_sub(2) as usize; // Account for borders
+
+    // Clamp scroll
+    app.clamp_diff_scroll(visible_height);
+
+    let state = &app.diff_state;
+
+    let lines: Vec<Line> = state
+        .diff_lines
+        .iter()
+        .map(|line| {
+            let style = if line.starts_with('+') && !line.starts_with("+++") {
+                Style::default().fg(Color::Green)
+            } else if line.starts_with('-') && !line.starts_with("---") {
+                Style::default().fg(Color::Red)
+            } else if line.starts_with("@@") {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            Line::styled(line.clone(), style)
+        })
+        .collect();
+
+    if lines.is_empty() {
+        let empty_msg = Paragraph::new("  (select a file to view diff)")
+            .style(Style::default().fg(Color::DarkGray).italic())
+            .block(Block::default().borders(Borders::ALL).title(" Diff "));
+        frame.render_widget(empty_msg, area);
+        return;
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(" Diff "))
+        .scroll((state.diff_scroll as u16, 0));
+    frame.render_widget(paragraph, area);
+
+    // Scrollbar
+    let content_height = state.diff_lines.len();
+    if content_height > visible_height {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"));
+        let mut scrollbar_state =
+            ScrollbarState::new(content_height.saturating_sub(visible_height))
+                .position(state.diff_scroll);
+        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    }
+}
+
+/// Render the status bar for diff view.
+fn render_diff_status_bar(frame: &mut Frame, area: Rect) {
+    let help_text = " j/k: select file  Ctrl+d/u: scroll diff  q/Esc: back ";
     let status_bar =
         Paragraph::new(help_text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
     frame.render_widget(status_bar, area);
@@ -475,6 +617,30 @@ fn render_help(frame: &mut Frame) {
         Line::from(vec![
             Span::styled("  u          ", Style::default().fg(Color::Yellow)),
             Span::raw("Undo last operation"),
+        ]),
+        Line::raw(""),
+        Line::styled("  Detail View", Style::default().bold()),
+        Line::from(vec![
+            Span::styled("  d          ", Style::default().fg(Color::Yellow)),
+            Span::raw("View file diffs"),
+        ]),
+        Line::raw(""),
+        Line::styled("  Diff View", Style::default().bold()),
+        Line::from(vec![
+            Span::styled("  j / ↓      ", Style::default().fg(Color::Yellow)),
+            Span::raw("Select next file"),
+        ]),
+        Line::from(vec![
+            Span::styled("  k / ↑      ", Style::default().fg(Color::Yellow)),
+            Span::raw("Select previous file"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+d/u   ", Style::default().fg(Color::Yellow)),
+            Span::raw("Scroll diff text"),
+        ]),
+        Line::from(vec![
+            Span::styled("  q / Esc    ", Style::default().fg(Color::Yellow)),
+            Span::raw("Back to detail"),
         ]),
         Line::raw(""),
         Line::styled("  General", Style::default().bold()),
