@@ -79,4 +79,53 @@ impl App {
     pub fn page_up(&mut self, page_size: usize) {
         self.selected = self.selected.saturating_sub(page_size);
     }
+
+    // === Diff view navigation ===
+
+    /// Select next file in diff view.
+    pub fn diff_select_next(&mut self) {
+        let count = self.diff_state.files.len();
+        if count > 0 && self.diff_state.selected < count - 1 {
+            self.diff_state.selected += 1;
+        }
+    }
+
+    /// Select previous file in diff view.
+    pub fn diff_select_previous(&mut self) {
+        if self.diff_state.selected > 0 {
+            self.diff_state.selected -= 1;
+        }
+    }
+
+    /// Scroll diff text down.
+    pub fn diff_scroll_down(&mut self, amount: usize) {
+        self.diff_state.diff_scroll = self.diff_state.diff_scroll.saturating_add(amount);
+    }
+
+    /// Scroll diff text up.
+    pub fn diff_scroll_up(&mut self, amount: usize) {
+        self.diff_state.diff_scroll = self.diff_state.diff_scroll.saturating_sub(amount);
+    }
+
+    /// Clamp diff scroll to valid range.
+    pub fn clamp_diff_scroll(&mut self, visible_height: usize) {
+        let content_height = self.diff_state.diff_lines.len();
+        let max_scroll = content_height.saturating_sub(visible_height);
+        if self.diff_state.diff_scroll > max_scroll {
+            self.diff_state.diff_scroll = max_scroll;
+        }
+    }
+
+    /// Ensure selected file is visible in file list.
+    pub fn ensure_diff_file_visible(&mut self, visible_height: usize) {
+        if visible_height == 0 {
+            return;
+        }
+        let selected = self.diff_state.selected;
+        if selected < self.diff_state.file_scroll {
+            self.diff_state.file_scroll = selected;
+        } else if selected >= self.diff_state.file_scroll + visible_height {
+            self.diff_state.file_scroll = selected.saturating_sub(visible_height - 1);
+        }
+    }
 }

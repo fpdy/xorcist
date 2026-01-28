@@ -1,9 +1,9 @@
 //! jj command execution methods for App.
 
 use crate::error::XorcistError;
-use crate::jj::fetch_graph_log;
+use crate::jj::{fetch_diff_file, fetch_graph_log, parse_diff_summary};
 
-use super::{App, CommandResult, ModalState, PendingAction};
+use super::{App, CommandResult, DiffState, ModalState, PendingAction, View};
 
 impl App {
     /// Refresh log entries.
@@ -188,6 +188,43 @@ impl App {
         let result = self.runner.execute_bookmark_set(name, &change_id);
         self.handle_command_result(result);
         self.refresh_log()?;
+        Ok(())
+    }
+
+    /// Open diff view for the current detail state.
+    pub fn open_diff_view(&mut self) -> Result<(), XorcistError> {
+        let Some(detail) = &self.detail_state else {
+            return Ok(());
+        };
+        let change_id = detail.show_output.change_id.clone();
+
+        // Fetch diff summary
+        let summary_output =
+            self.runner
+                .run_capture(&["diff", "-r", &change_id, "--color=never", "--summary"])?;
+        let files = parse_diff_summary(&summary_output);
+
+        self.diff_state = DiffState::new(change_id, files);
+
+        // Fetch initial diff text if files exist
+        if !self.diff_state.files.is_empty() {
+            self.refresh_diff_text()?;
+        }
+
+        self.view = View::Diff;
+        Ok(())
+    }
+
+    /// Refresh diff text for the currently selected file.
+    pub fn refresh_diff_text(&mut self) -> Result<(), XorcistError> {
+        let Some(file) = self.diff_state.selected_file() else {
+            self.diff_state.diff_lines = Vec::new();
+            return Ok(());
+        };
+        let path = file.path.clone();
+        let output = fetch_diff_file(&self.runner, &self.diff_state.change_id, &path)?;
+        self.diff_state.diff_lines = output.lines().map(|s| s.to_string()).collect();
+        self.diff_state.diff_scroll = 0; // Reset scroll on file change
         Ok(())
     }
 }

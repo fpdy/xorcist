@@ -341,3 +341,161 @@ fn test_ensure_selected_visible() {
         line_idx
     );
 }
+
+// === DiffState tests ===
+
+use crate::jj::{DiffEntry, DiffStatus};
+
+fn make_diff_entries(count: usize) -> Vec<DiffEntry> {
+    (0..count)
+        .map(|i| DiffEntry {
+            status: DiffStatus::Modified,
+            path: format!("src/file{i}.rs"),
+        })
+        .collect()
+}
+
+#[test]
+fn test_diff_state_new() {
+    let files = make_diff_entries(3);
+    let state = DiffState::new("abcd1234".to_string(), files.clone());
+
+    assert_eq!(state.change_id, "abcd1234");
+    assert_eq!(state.files.len(), 3);
+    assert_eq!(state.selected, 0);
+    assert_eq!(state.file_scroll, 0);
+    assert!(state.diff_lines.is_empty());
+    assert_eq!(state.diff_scroll, 0);
+}
+
+#[test]
+fn test_diff_state_selected_file() {
+    let files = make_diff_entries(3);
+    let mut state = DiffState::new("abcd1234".to_string(), files);
+
+    assert_eq!(state.selected_file().unwrap().path, "src/file0.rs");
+
+    state.selected = 1;
+    assert_eq!(state.selected_file().unwrap().path, "src/file1.rs");
+
+    state.selected = 2;
+    assert_eq!(state.selected_file().unwrap().path, "src/file2.rs");
+
+    // Out of bounds
+    state.selected = 10;
+    assert!(state.selected_file().is_none());
+}
+
+#[test]
+fn test_diff_state_empty_files() {
+    let state = DiffState::new("abcd1234".to_string(), vec![]);
+
+    assert!(state.files.is_empty());
+    assert!(state.selected_file().is_none());
+}
+
+#[test]
+fn test_diff_select_navigation() {
+    let graph_log = GraphLog::default();
+    let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+    app.diff_state = DiffState::new("abcd1234".to_string(), make_diff_entries(5));
+
+    assert_eq!(app.diff_state.selected, 0);
+
+    app.diff_select_next();
+    assert_eq!(app.diff_state.selected, 1);
+
+    app.diff_select_next();
+    app.diff_select_next();
+    app.diff_select_next();
+    assert_eq!(app.diff_state.selected, 4);
+
+    // Should not go past the end
+    app.diff_select_next();
+    assert_eq!(app.diff_state.selected, 4);
+
+    app.diff_select_previous();
+    assert_eq!(app.diff_state.selected, 3);
+
+    // Should not go below 0
+    app.diff_state.selected = 0;
+    app.diff_select_previous();
+    assert_eq!(app.diff_state.selected, 0);
+}
+
+#[test]
+fn test_diff_scroll() {
+    let graph_log = GraphLog::default();
+    let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+    app.diff_state.diff_lines = vec!["line1".to_string(); 100];
+    app.diff_state.diff_scroll = 0;
+
+    app.diff_scroll_down(10);
+    assert_eq!(app.diff_state.diff_scroll, 10);
+
+    app.diff_scroll_down(5);
+    assert_eq!(app.diff_state.diff_scroll, 15);
+
+    app.diff_scroll_up(3);
+    assert_eq!(app.diff_state.diff_scroll, 12);
+
+    // Should not go below 0
+    app.diff_scroll_up(100);
+    assert_eq!(app.diff_state.diff_scroll, 0);
+}
+
+#[test]
+fn test_clamp_diff_scroll() {
+    let graph_log = GraphLog::default();
+    let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+    app.diff_state.diff_lines = vec!["line".to_string(); 50];
+    app.diff_state.diff_scroll = 100; // Beyond content
+
+    // Visible height 20, content 50 -> max_scroll = 30
+    app.clamp_diff_scroll(20);
+    assert_eq!(app.diff_state.diff_scroll, 30);
+
+    // Already within bounds
+    app.diff_state.diff_scroll = 10;
+    app.clamp_diff_scroll(20);
+    assert_eq!(app.diff_state.diff_scroll, 10);
+}
+
+#[test]
+fn test_ensure_diff_file_visible() {
+    let graph_log = GraphLog::default();
+    let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+    app.diff_state = DiffState::new("abcd1234".to_string(), make_diff_entries(20));
+
+    // Initial state
+    assert_eq!(app.diff_state.file_scroll, 0);
+
+    // Select item beyond viewport (visible_height = 5)
+    app.diff_state.selected = 10;
+    app.ensure_diff_file_visible(5);
+    // selected 10 should be visible: file_scroll should be 10 - 4 = 6
+    assert_eq!(app.diff_state.file_scroll, 6);
+
+    // Select item above current viewport
+    app.diff_state.selected = 2;
+    app.ensure_diff_file_visible(5);
+    assert_eq!(app.diff_state.file_scroll, 2);
+
+    // Item within viewport should not change scroll
+    app.diff_state.file_scroll = 5;
+    app.diff_state.selected = 7;
+    app.ensure_diff_file_visible(5);
+    assert_eq!(app.diff_state.file_scroll, 5); // 7 is within [5, 10)
+}
+
+#[test]
+fn test_ensure_diff_file_visible_zero_height() {
+    let graph_log = GraphLog::default();
+    let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+    app.diff_state = DiffState::new("abcd1234".to_string(), make_diff_entries(10));
+    app.diff_state.file_scroll = 5;
+
+    // Zero height should not panic or change scroll
+    app.ensure_diff_file_visible(0);
+    assert_eq!(app.diff_state.file_scroll, 5);
+}

@@ -132,7 +132,7 @@ pub fn handle_modal_keys(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 /// Handle key events in detail view.
-pub fn handle_detail_keys(app: &mut App, key: KeyEvent) {
+pub fn handle_detail_keys(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => {
             app.close_detail();
@@ -155,8 +155,44 @@ pub fn handle_detail_keys(app: &mut App, key: KeyEvent) {
         KeyCode::PageUp => {
             app.detail_scroll_up(10);
         }
+        // Open diff view with 'd' key
+        KeyCode::Char('d') => {
+            app.open_diff_view().context("failed to open diff view")?;
+        }
         _ => {}
     }
+    Ok(())
+}
+
+/// Handle key events in diff view.
+pub fn handle_diff_keys(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Esc => {
+            app.close_diff();
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.diff_select_next();
+            app.refresh_diff_text().context("failed to refresh diff")?;
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.diff_select_previous();
+            app.refresh_diff_text().context("failed to refresh diff")?;
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.diff_scroll_down(10);
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.diff_scroll_up(10);
+        }
+        KeyCode::PageDown => {
+            app.diff_scroll_down(10);
+        }
+        KeyCode::PageUp => {
+            app.diff_scroll_up(10);
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Dispatch key event to appropriate handler based on app state.
@@ -189,7 +225,8 @@ pub fn dispatch_key_event(app: &mut App, key: KeyEvent, event: &Event) -> Result
     } else {
         match app.view {
             View::Log => handle_log_keys(app, key)?,
-            View::Detail => handle_detail_keys(app, key),
+            View::Detail => handle_detail_keys(app, key)?,
+            View::Diff => handle_diff_keys(app, key)?,
         }
     }
 

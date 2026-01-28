@@ -9,14 +9,15 @@ use std::sync::LazyLock;
 use crate::error::XorcistError;
 use crate::jj::runner::JjRunner;
 
-/// Template for graph log output with shortened timestamps.
+/// Template for graph log output with shortened timestamps and bookmarks.
 ///
-/// Format: `change_id author timestamp description`
+/// Format: `change_id author timestamp [bookmarks] description`
 /// - change_id: 8-character shortest unique prefix
 /// - author: author name
 /// - timestamp: shortened format (e.g., "12h" instead of "12 hours ago")
+/// - bookmarks: comma-separated bookmark names wrapped in brackets (if any)
 /// - description: first line of commit message
-const GRAPH_LOG_TEMPLATE: &str = r#"separate(" ", change_id.shortest(8), author.name(), author.timestamp().ago().replace(regex:"\\s+seconds? ago", "s").replace(regex:"\\s+minutes? ago", "m").replace(regex:"\\s+hours? ago", "h").replace(regex:"\\s+days? ago", "d").replace(regex:"\\s+weeks? ago", "w").replace(regex:"\\s+months? ago", "mo").replace(regex:"\\s+years? ago", "y"), description.first_line())"#;
+const GRAPH_LOG_TEMPLATE: &str = r#"separate(" ", change_id.shortest(8), author.name(), author.timestamp().ago().replace(regex:"\\s+seconds? ago", "s").replace(regex:"\\s+minutes? ago", "m").replace(regex:"\\s+hours? ago", "h").replace(regex:"\\s+days? ago", "d").replace(regex:"\\s+weeks? ago", "w").replace(regex:"\\s+months? ago", "mo").replace(regex:"\\s+years? ago", "y"), if(bookmarks, "[" ++ bookmarks.map(|b| b.name()).join(",") ++ "]"), description.first_line())"#;
 
 /// Regex pattern for extracting change_id from graph output.
 /// Matches 8 lowercase letters after graph symbols.
@@ -27,15 +28,17 @@ static CHANGE_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Regex pattern for extracting all fields from a commit line.
-/// Format: `change_id author timestamp description`
+/// Format: `change_id author timestamp [bookmarks] description`
 static COMMIT_LINE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    // Match: graph_symbols change_id(8 letters) author timestamp description
+    // Match: graph_symbols change_id(8 letters) author timestamp [bookmarks]? description
     // - graph_symbols: non-letter characters at the start
     // - change_id: exactly 8 lowercase letters
     // - author: non-whitespace characters
     // - timestamp: non-whitespace characters (e.g., "1h", "2d", "3mo")
+    // - bookmarks: optional, wrapped in [] (e.g., "[main,dev]")
     // - description: everything after (may be empty)
-    Regex::new(r"^[^a-z]*([a-z]{8})\s+(\S+)\s+(\S+)\s*(.*)$").expect("Invalid regex pattern")
+    Regex::new(r"^[^a-z]*([a-z]{8})\s+(\S+)\s+(\S+)\s*(?:\[([^\]]*)\]\s*)?(.*)$")
+        .expect("Invalid regex pattern")
 });
 
 /// Regex pattern to strip ANSI escape sequences.
@@ -163,11 +166,13 @@ fn extract_change_id(plain: &str) -> Option<String> {
 /// Extract change_id and description from a plain text commit line.
 ///
 /// Returns (change_id, description) where description is Some for commit lines.
+/// Note: bookmarks (group 4) are handled by the template itself - they appear in the raw output.
 fn extract_commit_fields(plain: &str) -> (Option<String>, Option<String>) {
     match COMMIT_LINE_REGEX.captures(plain) {
         Some(cap) => {
             let change_id = cap[1].to_string();
-            let description = cap.get(4).map(|m| m.as_str().to_string());
+            // Group 5 is the description (after optional [bookmarks])
+            let description = cap.get(5).map(|m| m.as_str().to_string());
             (Some(change_id), description)
         }
         None => (None, None),
