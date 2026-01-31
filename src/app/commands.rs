@@ -244,7 +244,8 @@ impl App {
         let path = file.path.clone();
         let output = fetch_diff_file(&self.runner, &self.diff_state.change_id, &path)?;
         self.diff_state.diff_lines = output.lines().map(|s| s.to_string()).collect();
-        self.diff_state.diff_scroll = 0; // Reset scroll on file change
+        self.diff_state.diff_scroll = 0; // Reset vertical scroll on file change
+        self.diff_state.diff_h_scroll = 0; // Reset horizontal scroll on file change
         Ok(())
     }
 }

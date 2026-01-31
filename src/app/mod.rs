@@ -72,8 +72,10 @@ pub struct DiffState {
     pub file_scroll: usize,
     /// Diff text lines for selected file.
     pub diff_lines: Vec<String>,
-    /// Scroll offset for diff text.
+    /// Vertical scroll offset for diff text.
     pub diff_scroll: usize,
+    /// Horizontal scroll offset for diff text.
+    pub diff_h_scroll: usize,
 }
 
 impl DiffState {
@@ -86,6 +88,7 @@ impl DiffState {
             file_scroll: 0,
             diff_lines: Vec::new(),
             diff_scroll: 0,
+            diff_h_scroll: 0,
         }
     }
 

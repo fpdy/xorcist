@@ -194,6 +194,13 @@ pub fn handle_diff_keys(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::PageUp => {
             app.diff_scroll_up(10);
         }
+        // Horizontal scrolling for diff text
+        KeyCode::Right => {
+            app.diff_scroll_right(8);
+        }
+        KeyCode::Left => {
+            app.diff_scroll_left(8);
+        }
         _ => {}
     }
     Ok(())

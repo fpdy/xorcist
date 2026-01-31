@@ -1,5 +1,7 @@
 //! Navigation methods for App.
 
+use unicode_width::UnicodeWidthStr;
+
 use super::App;
 
 impl App {
@@ -113,6 +115,32 @@ impl App {
         let max_scroll = content_height.saturating_sub(visible_height);
         if self.diff_state.diff_scroll > max_scroll {
             self.diff_state.diff_scroll = max_scroll;
+        }
+    }
+
+    /// Scroll diff text right (horizontal).
+    pub fn diff_scroll_right(&mut self, amount: usize) {
+        self.diff_state.diff_h_scroll = self.diff_state.diff_h_scroll.saturating_add(amount);
+    }
+
+    /// Scroll diff text left (horizontal).
+    pub fn diff_scroll_left(&mut self, amount: usize) {
+        self.diff_state.diff_h_scroll = self.diff_state.diff_h_scroll.saturating_sub(amount);
+    }
+
+    /// Clamp horizontal diff scroll to valid range.
+    pub fn clamp_diff_h_scroll(&mut self, visible_width: usize) {
+        // Use display width (unicode_width) instead of byte length for correct CJK handling
+        let max_line_width = self
+            .diff_state
+            .diff_lines
+            .iter()
+            .map(|l| l.width())
+            .max()
+            .unwrap_or(0);
+        let max_scroll = max_line_width.saturating_sub(visible_width);
+        if self.diff_state.diff_h_scroll > max_scroll {
+            self.diff_state.diff_h_scroll = max_scroll;
         }
     }
 
