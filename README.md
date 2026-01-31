@@ -7,10 +7,12 @@ A TUI client for [jj (Jujutsu VCS)](https://github.com/martinvonz/jj).
 - **Log View** - Browse commit history with vim-like navigation
 - **Native Graph Display** - jj's graph visualization with full ANSI color support
 - **Detail View** - View commit metadata and diff summary
+- **Diff View** - Browse changed files and view file-level diffs with syntax highlighting
 - **Conventional Commits** - Automatic emoji formatting (`feat:` → `✨`, `fix:` → `🩹`, etc.)
 - **Incremental Loading** - Load history on demand (default: 500 entries, auto-loads more as needed)
 - **Confirmation Dialogs** - Safe destructive operations (abandon, squash, push, undo)
 - **Bookmark Management** - Set bookmarks on any revision
+- **Rebase Support** - Rebase revisions to any destination
 - **Git Integration** - Fetch and push with jj's git backend
 - **Colocated Repository Support** - Works with `.jj` + `.git` repositories
 
@@ -86,11 +88,34 @@ When scrolling near the end of the log, additional entries are loaded automatica
 | `e` | `jj edit` | No |
 | `d` | `jj describe -m` (message input) | No |
 | `b` | `jj bookmark set` (name input) | No |
+| `r` | `jj rebase -d` (destination input) | No |
 | `a` | `jj abandon` | Yes |
 | `s` | `jj squash` | Yes |
 | `f` | `jj git fetch` | No |
 | `p` | `jj git push` | Yes |
 | `u` | `jj undo` | Yes |
+
+### Detail View
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Scroll down |
+| `k` / `↑` | Scroll up |
+| `d` | Open diff view |
+| `Ctrl+d` / `PageDown` | Page down |
+| `Ctrl+u` / `PageUp` | Page up |
+| `q` / `Esc` | Back to log |
+
+### Diff View
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Select next file |
+| `k` / `↑` | Select previous file |
+| `Ctrl+d` / `PageDown` | Scroll diff down |
+| `Ctrl+u` / `PageUp` | Scroll diff up |
+| `←` / `→` | Scroll diff horizontally |
+| `q` / `Esc` | Back to detail |
 
 ## Display
 
