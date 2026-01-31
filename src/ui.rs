@@ -397,6 +397,9 @@ fn render_detail_status_bar(frame: &mut Frame, area: Rect) {
     frame.render_widget(status_bar, area);
 }
 
+/// Minimum width for horizontal (side-by-side) diff layout.
+const MIN_WIDTH_FOR_HORIZONTAL_DIFF: u16 = 120;
+
 /// Render the diff view.
 fn render_diff_view(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::vertical([
@@ -416,15 +419,30 @@ fn render_diff_view(frame: &mut Frame, app: &mut App) {
     let title_bar = Paragraph::new(title).style(Style::default().bg(Color::Green).fg(Color::Black));
     frame.render_widget(title_bar, chunks[0]);
 
-    // Content: split into file list and diff text
-    let content_chunks = Layout::horizontal([
-        Constraint::Length(40), // File list
-        Constraint::Min(1),     // Diff text
-    ])
-    .split(chunks[1]);
+    // Content: responsive layout based on width
+    // Ratio is 2:3 (file list : diff text)
+    let content_area = chunks[1];
+    if content_area.width >= MIN_WIDTH_FOR_HORIZONTAL_DIFF {
+        // Horizontal (side-by-side) layout for wide terminals
+        let content_chunks = Layout::horizontal([
+            Constraint::Ratio(2, 5), // File list (2/5 = 40%)
+            Constraint::Ratio(3, 5), // Diff text (3/5 = 60%)
+        ])
+        .split(content_area);
 
-    render_diff_file_list(frame, content_chunks[0], app);
-    render_diff_text(frame, content_chunks[1], app);
+        render_diff_file_list(frame, content_chunks[0], app);
+        render_diff_text(frame, content_chunks[1], app);
+    } else {
+        // Vertical (stacked) layout for narrow terminals
+        let content_chunks = Layout::vertical([
+            Constraint::Ratio(2, 5), // File list (2/5 = 40%)
+            Constraint::Ratio(3, 5), // Diff text (3/5 = 60%)
+        ])
+        .split(content_area);
+
+        render_diff_file_list(frame, content_chunks[0], app);
+        render_diff_text(frame, content_chunks[1], app);
+    }
 
     // Status bar
     render_diff_status_bar(frame, chunks[2]);
@@ -481,11 +499,15 @@ fn render_diff_file_list(frame: &mut Frame, area: Rect, app: &mut App) {
 /// Render the diff text in diff view.
 fn render_diff_text(frame: &mut Frame, area: Rect, app: &mut App) {
     let visible_height = area.height.saturating_sub(2) as usize; // Account for borders
+    let visible_width = area.width.saturating_sub(2) as usize; // Account for borders
 
-    // Clamp scroll
+    // Clamp vertical and horizontal scroll
     app.clamp_diff_scroll(visible_height);
+    app.clamp_diff_h_scroll(visible_width);
 
     let state = &app.diff_state;
+    let h_scroll = state.diff_h_scroll;
+    let v_scroll = state.diff_scroll;
 
     let lines: Vec<Line> = state
         .diff_lines
@@ -512,9 +534,17 @@ fn render_diff_text(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
+    // Build title with scroll indicator
+    let title = if h_scroll > 0 {
+        format!(" Diff (←{}) ", h_scroll)
+    } else {
+        " Diff ".to_string()
+    };
+
+    // Use Paragraph::scroll for both vertical and horizontal scrolling
     let paragraph = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(" Diff "))
-        .scroll((state.diff_scroll as u16, 0));
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .scroll((v_scroll as u16, h_scroll as u16));
     frame.render_widget(paragraph, area);
 
     // Scrollbar
@@ -524,15 +554,14 @@ fn render_diff_text(frame: &mut Frame, area: Rect, app: &mut App) {
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
         let mut scrollbar_state =
-            ScrollbarState::new(content_height.saturating_sub(visible_height))
-                .position(state.diff_scroll);
+            ScrollbarState::new(content_height.saturating_sub(visible_height)).position(v_scroll);
         frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
 }
 
 /// Render the status bar for diff view.
 fn render_diff_status_bar(frame: &mut Frame, area: Rect) {
-    let help_text = " j/k: select file  Ctrl+d/u: scroll diff  q/Esc: back ";
+    let help_text = " j/k: select file  Ctrl+d/u: scroll  ←/→: pan  q/Esc: back ";
     let status_bar =
         Paragraph::new(help_text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
     frame.render_widget(status_bar, area);
@@ -640,7 +669,11 @@ fn render_help(frame: &mut Frame) {
         ]),
         Line::from(vec![
             Span::styled("  Ctrl+d/u   ", Style::default().fg(Color::Yellow)),
-            Span::raw("Scroll diff text"),
+            Span::raw("Scroll diff vertically"),
+        ]),
+        Line::from(vec![
+            Span::styled("  ← / →      ", Style::default().fg(Color::Yellow)),
+            Span::raw("Scroll diff horizontally"),
         ]),
         Line::from(vec![
             Span::styled("  q / Esc    ", Style::default().fg(Color::Yellow)),
