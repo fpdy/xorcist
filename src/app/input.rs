@@ -34,6 +34,7 @@ impl App {
             InputMode::Describe => self.execute_describe(&value)?,
             InputMode::BookmarkSet => self.execute_bookmark_set(&value)?,
             InputMode::NewWithMessage => self.execute_new_with_message(&value)?,
+            InputMode::RebaseDestination => self.execute_rebase(&value)?,
         }
         Ok(())
     }

@@ -89,6 +89,10 @@ pub fn handle_log_keys(app: &mut App, key: KeyEvent) -> Result<()> {
             // jj bookmark set (input mode)
             app.start_input_mode(InputMode::BookmarkSet);
         }
+        KeyCode::Char('r') => {
+            // jj rebase -d (input mode)
+            app.start_input_mode(InputMode::RebaseDestination);
+        }
         _ => {}
     }
 

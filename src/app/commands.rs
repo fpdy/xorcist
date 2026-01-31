@@ -191,6 +191,26 @@ impl App {
         Ok(())
     }
 
+    /// Execute `jj rebase -d` on the selected revision.
+    pub fn execute_rebase(&mut self, destination: &str) -> Result<(), XorcistError> {
+        let destination = destination.trim();
+        if destination.is_empty() {
+            self.last_command_result = Some(CommandResult {
+                success: false,
+                message: "Destination cannot be empty".to_string(),
+            });
+            return Ok(());
+        }
+        let Some(change_id) = self.selected_change_id() else {
+            return Ok(());
+        };
+        let change_id = change_id.to_string();
+        let result = self.runner.execute_rebase(&change_id, destination);
+        self.handle_command_result(result);
+        self.refresh_log()?;
+        Ok(())
+    }
+
     /// Open diff view for the current detail state.
     pub fn open_diff_view(&mut self) -> Result<(), XorcistError> {
         let Some(detail) = &self.detail_state else {

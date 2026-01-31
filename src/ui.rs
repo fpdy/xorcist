@@ -208,7 +208,7 @@ fn render_log_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             format!("[{} commits] ", app.commit_count())
         };
         let help = format!(
-            " {count_info}n: new  e: edit  d: describe  b: bookmark  Enter: show  q: quit  ?: help "
+            " {count_info}n: new  e: edit  d: describe  b: bookmark  r: rebase  Enter: show  ?: help "
         );
         (help, Style::default().bg(Color::DarkGray).fg(Color::White))
     };
@@ -618,6 +618,10 @@ fn render_help(frame: &mut Frame) {
             Span::styled("  u          ", Style::default().fg(Color::Yellow)),
             Span::raw("Undo last operation"),
         ]),
+        Line::from(vec![
+            Span::styled("  r          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Rebase to destination"),
+        ]),
         Line::raw(""),
         Line::styled("  Detail View", Style::default().bold()),
         Line::from(vec![
@@ -754,6 +758,7 @@ fn render_input_overlay(frame: &mut Frame, app: &App) {
         InputMode::Describe => " Describe ",
         InputMode::BookmarkSet => " Set Bookmark ",
         InputMode::NewWithMessage => " New Change ",
+        InputMode::RebaseDestination => " Rebase to ",
     };
 
     let block = Block::default()

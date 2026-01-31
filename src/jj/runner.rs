@@ -126,6 +126,15 @@ impl JjRunner {
         self.run_command(&["undo"])
     }
 
+    /// Execute `jj rebase -r <revision> -d <destination>`.
+    pub fn execute_rebase(
+        &self,
+        revision: &str,
+        destination: &str,
+    ) -> Result<CommandResult, XorcistError> {
+        self.run_command(&["rebase", "-r", revision, "-d", destination])
+    }
+
     /// Run a jj command and return a CommandResult.
     fn run_command(&self, args: &[&str]) -> Result<CommandResult, XorcistError> {
         let output = self.execute(args)?;

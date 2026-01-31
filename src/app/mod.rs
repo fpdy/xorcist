@@ -32,6 +32,8 @@ pub enum InputMode {
     BookmarkSet,
     /// Creating new change with message for `jj new -m`.
     NewWithMessage,
+    /// Entering destination for `jj rebase -d`.
+    RebaseDestination,
 }
 
 impl InputMode {
@@ -41,6 +43,7 @@ impl InputMode {
             InputMode::Describe => "Enter commit message...",
             InputMode::BookmarkSet => "Enter bookmark name...",
             InputMode::NewWithMessage => "Enter message (empty for no message)...",
+            InputMode::RebaseDestination => "Enter destination (e.g., @-, main, abc123)...",
         }
     }
 }
