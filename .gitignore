@@ -2,9 +2,15 @@
 
 .opencode
 opencode.jsonc
-
 .cursor
 
 AGENTS.md
 CLAUDE.md
 
+.agents/
+.pi/
+
+# pi-zellij-orchestrator
+.orchestrator/
+AGENTS.pi-orchestrator.md
+.env
