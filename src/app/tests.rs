@@ -2,6 +2,8 @@
 
 use super::*;
 use crate::jj::GraphLog;
+use crate::keys::dispatch_key_event;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::path::Path;
 
 fn make_graph_log(count: usize) -> GraphLog {
@@ -139,6 +141,33 @@ fn test_view_transitions() {
     app.close_detail();
     assert_eq!(app.view, View::Log);
     assert!(app.detail_state.is_none());
+}
+
+#[test]
+fn test_key_event_priority_is_input_modal_active_view() {
+    let graph_log = make_graph_log(1);
+    let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+
+    app.view = View::Log;
+    app.modal = ModalState::Confirm(PendingAction::GitPush);
+    app.start_input_mode(InputMode::Describe);
+
+    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    let event = Event::Key(esc);
+    dispatch_key_event(&mut app, esc, &event).unwrap();
+
+    assert!(!app.is_input_mode());
+    assert!(app.is_modal_open());
+    assert!(!app.should_quit);
+
+    dispatch_key_event(&mut app, esc, &event).unwrap();
+
+    assert!(!app.is_modal_open());
+    assert!(!app.should_quit);
+
+    dispatch_key_event(&mut app, esc, &event).unwrap();
+
+    assert!(app.should_quit);
 }
 
 #[test]

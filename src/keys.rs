@@ -227,12 +227,12 @@ pub fn dispatch_key_event(app: &mut App, key: KeyEvent, event: &Event) -> Result
         app.close_help();
     }
 
-    // Modal dialog takes highest priority
-    if app.is_modal_open() {
-        handle_modal_keys(app, key)?;
-    } else if app.is_input_mode() {
-        // Input mode takes second priority
+    // Input mode takes highest priority
+    if app.is_input_mode() {
         handle_input_keys(app, key, event)?;
+    } else if app.is_modal_open() {
+        // Modal dialog takes second priority
+        handle_modal_keys(app, key)?;
     } else {
         match app.view {
             View::Log => handle_log_keys(app, key)?,

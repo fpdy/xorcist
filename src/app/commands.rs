@@ -32,6 +32,15 @@ impl App {
         }
     }
 
+    /// Store the result of a mutating jj command, then refresh the log.
+    fn handle_command_result_and_refresh_log(
+        &mut self,
+        result: Result<CommandResult, XorcistError>,
+    ) -> Result<(), XorcistError> {
+        self.handle_command_result(result);
+        self.refresh_log()
+    }
+
     /// Show confirmation dialog for abandon.
     pub fn show_abandon_confirm(&mut self) {
         if let Some(change_id) = self.selected_change_id() {
@@ -89,23 +98,19 @@ impl App {
         match action {
             PendingAction::Abandon { change_id, .. } => {
                 let result = self.runner.execute_abandon(&change_id);
-                self.handle_command_result(result);
-                self.refresh_log()?;
+                self.handle_command_result_and_refresh_log(result)?;
             }
             PendingAction::Squash { change_id, .. } => {
                 let result = self.runner.execute_squash(&change_id);
-                self.handle_command_result(result);
-                self.refresh_log()?;
+                self.handle_command_result_and_refresh_log(result)?;
             }
             PendingAction::GitPush => {
                 let result = self.runner.execute_git_push();
-                self.handle_command_result(result);
-                self.refresh_log()?;
+                self.handle_command_result_and_refresh_log(result)?;
             }
             PendingAction::Undo => {
                 let result = self.runner.execute_undo();
-                self.handle_command_result(result);
-                self.refresh_log()?;
+                self.handle_command_result_and_refresh_log(result)?;
             }
         }
 
@@ -115,8 +120,7 @@ impl App {
     /// Execute `jj git fetch`.
     pub fn execute_git_fetch(&mut self) -> Result<(), XorcistError> {
         let result = self.runner.execute_git_fetch();
-        self.handle_command_result(result);
-        self.refresh_log()?;
+        self.handle_command_result_and_refresh_log(result)?;
         Ok(())
     }
 
@@ -127,8 +131,7 @@ impl App {
         };
         let change_id = change_id.to_string();
         let result = self.runner.execute_new(&change_id);
-        self.handle_command_result(result);
-        self.refresh_log()?;
+        self.handle_command_result_and_refresh_log(result)?;
         Ok(())
     }
 
@@ -143,8 +146,7 @@ impl App {
         } else {
             self.runner.execute_new_with_message(&change_id, message)
         };
-        self.handle_command_result(result);
-        self.refresh_log()?;
+        self.handle_command_result_and_refresh_log(result)?;
         Ok(())
     }
 
@@ -155,8 +157,7 @@ impl App {
         };
         let change_id = change_id.to_string();
         let result = self.runner.execute_edit(&change_id);
-        self.handle_command_result(result);
-        self.refresh_log()?;
+        self.handle_command_result_and_refresh_log(result)?;
         Ok(())
     }
 
@@ -167,8 +168,7 @@ impl App {
         };
         let change_id = change_id.to_string();
         let result = self.runner.execute_describe(&change_id, message);
-        self.handle_command_result(result);
-        self.refresh_log()?;
+        self.handle_command_result_and_refresh_log(result)?;
         Ok(())
     }
 
@@ -186,8 +186,7 @@ impl App {
         };
         let change_id = change_id.to_string();
         let result = self.runner.execute_bookmark_set(name, &change_id);
-        self.handle_command_result(result);
-        self.refresh_log()?;
+        self.handle_command_result_and_refresh_log(result)?;
         Ok(())
     }
 
@@ -206,8 +205,7 @@ impl App {
         };
         let change_id = change_id.to_string();
         let result = self.runner.execute_rebase(&change_id, destination);
-        self.handle_command_result(result);
-        self.refresh_log()?;
+        self.handle_command_result_and_refresh_log(result)?;
         Ok(())
     }
 

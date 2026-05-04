@@ -91,6 +91,7 @@ pub fn fetch_diff_file(
 }
 
 /// Parsed metadata from jj log output.
+#[derive(Debug)]
 struct ShowMeta {
     change_id: String,
     change_id_prefix: String,
@@ -114,7 +115,7 @@ fn parse_show_meta(output: &str) -> Result<ShowMeta, XorcistError> {
     let output = output.trim_end_matches('\n');
     let parts: Vec<&str> = output.split('\x00').collect();
 
-    if parts.len() < 8 {
+    if parts.len() != 8 {
         return Err(XorcistError::JjError(format!(
             "unexpected show output format: expected 8 fields, got {}",
             parts.len()
@@ -197,6 +198,23 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_show_meta_field_order_contract() {
+        let output = "change-prefix\x00change-rest\x00commit-prefix\x00commit-rest\x00author-name\x00timestamp-value\x00description text\x00bookmark-a,bookmark-b\n";
+        let result = parse_show_meta(output).unwrap();
+
+        assert_eq!(result.change_id_prefix, "change-prefix");
+        assert_eq!(result.change_id_rest, "change-rest");
+        assert_eq!(result.change_id, "change-prefixchange-rest");
+        assert_eq!(result.commit_id_prefix, "commit-prefix");
+        assert_eq!(result.commit_id_rest, "commit-rest");
+        assert_eq!(result.commit_id, "commit-prefixcommit-rest");
+        assert_eq!(result.author, "author-name");
+        assert_eq!(result.timestamp, "timestamp-value");
+        assert_eq!(result.description, "description text");
+        assert_eq!(result.bookmarks, vec!["bookmark-a", "bookmark-b"]);
+    }
+
+    #[test]
     fn test_parse_show_meta_no_bookmarks() {
         let output = "abc\x00123\x00def\x00456\x00Alice\x002 hours ago\x00Add feature\x00\n";
         let result = parse_show_meta(output).unwrap();
@@ -237,6 +255,28 @@ mod tests {
         assert_eq!(result.change_id, "abcd");
         assert_eq!(result.commit_id_prefix, "defg");
         assert!(result.commit_id_rest.is_empty());
+    }
+
+    #[test]
+    fn test_parse_show_meta_errors_on_wrong_field_count() {
+        let too_few =
+            parse_show_meta("change\x00rest\x00commit\x00rest\x00author\x00time\x00description\n")
+                .unwrap_err();
+        assert!(
+            too_few
+                .to_string()
+                .contains("unexpected show output format: expected 8 fields, got 7")
+        );
+
+        let too_many = parse_show_meta(
+            "change\x00rest\x00commit\x00rest\x00author\x00time\x00description\x00bookmark\x00extra\n",
+        )
+        .unwrap_err();
+        assert!(
+            too_many
+                .to_string()
+                .contains("unexpected show output format: expected 8 fields, got 9")
+        );
     }
 
     #[test]

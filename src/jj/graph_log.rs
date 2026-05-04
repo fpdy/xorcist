@@ -281,6 +281,24 @@ mod tests {
     }
 
     #[test]
+    fn test_change_id_contract_requires_exactly_8_characters() {
+        assert_eq!(extract_change_id("@  abcdefg Author 1h too short"), None);
+        assert_eq!(
+            extract_change_id("@  abcdefgh Author 1h exact"),
+            Some("abcdefgh".to_string())
+        );
+        assert_eq!(extract_change_id("@  abcdefghi Author 1h too long"), None);
+
+        let too_short = GraphLine::new("@  abcdefg Author 1h too short".to_string(), 0);
+        let exact = GraphLine::new("@  abcdefgh Author 1h exact".to_string(), 1);
+        let too_long = GraphLine::new("@  abcdefghi Author 1h too long".to_string(), 2);
+
+        assert!(!too_short.is_commit_line());
+        assert!(exact.is_commit_line());
+        assert!(!too_long.is_commit_line());
+    }
+
+    #[test]
     fn test_graph_line_creation() {
         let raw = "\x1b[1m@\x1b[0m  \x1b[1m\x1b[38;5;5mq\x1b[0mzmtztvn 1XD 11m feat: test";
         let line = GraphLine::new(raw.to_string(), 0);
@@ -350,6 +368,26 @@ mod tests {
         assert_eq!(log.change_id_for_selection(2), Some("xyzwvuts"));
         assert_eq!(log.change_id_for_selection(3), Some("abcdefgh"));
         assert_eq!(log.change_id_for_selection(4), None);
+    }
+
+    #[test]
+    fn test_graph_only_lines_remain_visible_but_not_selectable() {
+        let output = "@  qzmtztvn 1XD 11m feat: test
+│
+├─╮
+│ ◆  xyzwvuts 1XD 1h test
+├─╯";
+
+        let log = GraphLog::from_output(output);
+
+        assert_eq!(log.lines.len(), 5);
+        assert_eq!(log.lines[1].plain, "│");
+        assert_eq!(log.lines[2].plain, "├─╮");
+        assert_eq!(log.lines[4].plain, "├─╯");
+        assert_eq!(log.commit_line_indices, vec![0, 3]);
+        assert_eq!(log.line_index_for_selection(0), Some(0));
+        assert_eq!(log.line_index_for_selection(1), Some(3));
+        assert_eq!(log.line_index_for_selection(2), None);
     }
 
     #[test]
