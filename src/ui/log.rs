@@ -170,7 +170,7 @@ fn render_log_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         let prefix = if result.success { "✓" } else { "✗" };
         let msg = format!(
             " {prefix} {} ",
-            truncate_message(&result.message, area.width as usize - 4)
+            truncate_message(&result.message, (area.width as usize).saturating_sub(4))
         );
         (msg, Style::default().bg(Color::DarkGray).fg(color))
     } else {

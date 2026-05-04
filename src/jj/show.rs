@@ -151,12 +151,12 @@ pub(crate) fn parse_diff_summary(output: &str) -> Vec<DiffEntry> {
     output
         .lines()
         .filter_map(|line| {
-            let line = line.trim();
             if line.is_empty() {
                 return None;
             }
 
-            // Format: "M path/to/file.rs" or "A new_file.rs"
+            // Format: "M path/to/file.rs" or "A new_file.rs".
+            // Preserve path bytes after the separator, including leading/trailing spaces.
             let (status_char, path) = line.split_once(' ')?;
             let status = match status_char {
                 "A" => DiffStatus::Added,
@@ -313,5 +313,14 @@ D src/old_file.rs
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, "path/with spaces/file.rs");
+    }
+
+    #[test]
+    fn test_parse_diff_summary_preserves_edge_spaces_in_path() {
+        let output = "M  leading and trailing .rs \n";
+        let entries = parse_diff_summary(output);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, " leading and trailing .rs ");
     }
 }

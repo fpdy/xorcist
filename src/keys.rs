@@ -211,34 +211,38 @@ pub fn handle_diff_keys(app: &mut App, key: KeyEvent) -> Result<()> {
 /// Returns `true` if the event was fully handled (e.g., help toggle),
 /// meaning the caller should `continue` the event loop.
 pub fn dispatch_key_event(app: &mut App, key: KeyEvent, event: &Event) -> Result<bool> {
-    // Handle ? key globally for help toggle
+    // Input mode takes highest priority, including over help toggles.
+    if app.is_input_mode() {
+        handle_input_keys(app, key, event)?;
+        return Ok(false);
+    }
+
+    // Modal dialogs take second priority, including over help toggles.
+    if app.is_modal_open() {
+        handle_modal_keys(app, key)?;
+        return Ok(false);
+    }
+
+    // Help belongs to active-view handling, after input and modal priority.
+    // While shown, only Esc and ? close it; all other keys are consumed so they
+    // cannot fall through to active-view commands.
+    if app.show_help {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('?') => app.close_help(),
+            _ => {}
+        }
+        return Ok(true);
+    }
+
     if key.code == KeyCode::Char('?') {
         app.toggle_help();
         return Ok(true);
     }
 
-    // If help is showing, close it and execute the command
-    if app.show_help {
-        if key.code == KeyCode::Esc {
-            app.close_help();
-            return Ok(true);
-        }
-        // Close help and fall through to execute the command
-        app.close_help();
-    }
-
-    // Input mode takes highest priority
-    if app.is_input_mode() {
-        handle_input_keys(app, key, event)?;
-    } else if app.is_modal_open() {
-        // Modal dialog takes second priority
-        handle_modal_keys(app, key)?;
-    } else {
-        match app.view {
-            View::Log => handle_log_keys(app, key)?,
-            View::Detail => handle_detail_keys(app, key)?,
-            View::Diff => handle_diff_keys(app, key)?,
-        }
+    match app.view {
+        View::Log => handle_log_keys(app, key)?,
+        View::Detail => handle_detail_keys(app, key)?,
+        View::Diff => handle_diff_keys(app, key)?,
     }
 
     Ok(false)

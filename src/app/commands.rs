@@ -63,19 +63,10 @@ impl App {
         }
     }
 
-    /// Get the description of the selected commit (parsed from plain text).
+    /// Get the parsed description of the selected commit.
     fn selected_description(&self) -> Option<String> {
         let line_idx = self.selected_line_index()?;
-        let line = &self.graph_log.lines[line_idx];
-        // The description is the last part of the line after change_id, author, timestamp
-        // Format: "change_id author timestamp description..."
-        // We'll extract everything after the third space-separated token
-        let parts: Vec<&str> = line.plain.split_whitespace().collect();
-        if parts.len() > 3 {
-            Some(parts[3..].join(" "))
-        } else {
-            None
-        }
+        self.graph_log.lines[line_idx].description.clone()
     }
 
     /// Show confirmation dialog for git push.

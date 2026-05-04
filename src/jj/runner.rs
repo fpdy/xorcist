@@ -139,13 +139,24 @@ impl JjRunner {
     fn run_command(&self, args: &[&str]) -> Result<CommandResult, XorcistError> {
         let output = self.execute(args)?;
         let success = output.status.success();
-        let message = if success {
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
-        } else {
-            String::from_utf8_lossy(&output.stderr).trim().to_string()
-        };
+        let message = command_message(success, &output.stdout, &output.stderr);
 
         Ok(CommandResult { success, message })
+    }
+}
+
+fn command_message(success: bool, stdout: &[u8], stderr: &[u8]) -> String {
+    if success {
+        let stdout = String::from_utf8_lossy(stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+        match (stdout.is_empty(), stderr.is_empty()) {
+            (true, true) => String::new(),
+            (false, true) => stdout,
+            (true, false) => stderr,
+            (false, false) => format!("{stdout}\n{stderr}"),
+        }
+    } else {
+        String::from_utf8_lossy(stderr).trim().to_string()
     }
 }
 
@@ -169,5 +180,17 @@ mod tests {
     fn test_runner_with_work_dir() {
         let runner = JjRunner::new().with_work_dir(Path::new("/tmp"));
         assert_eq!(runner.work_dir, Some(std::path::PathBuf::from("/tmp")));
+    }
+
+    #[test]
+    fn test_successful_command_message_preserves_stderr() {
+        assert_eq!(
+            command_message(true, b"", b"Created new commit\n"),
+            "Created new commit"
+        );
+        assert_eq!(
+            command_message(true, b"stdout\n", b"stderr\n"),
+            "stdout\nstderr"
+        );
     }
 }

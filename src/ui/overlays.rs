@@ -169,8 +169,10 @@ pub(super) fn render_modal_overlay(frame: &mut Frame, app: &App) {
 
     // Calculate centered area for modal box
     let area = frame.area();
-    let width = (message.len() as u16 + 6).max(30).min(area.width - 4);
-    let height = 5;
+    let width = (message.len() as u16 + 6)
+        .max(30)
+        .min(area.width.saturating_sub(4));
+    let height = 5.min(area.height);
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let modal_area = Rect::new(x, y, width, height);
@@ -218,8 +220,10 @@ pub(super) fn render_input_overlay(frame: &mut Frame, app: &App) {
 
     // Calculate centered area for input box
     let area = frame.area();
-    let width = (area.width * 60 / 100).max(40).min(area.width - 4);
-    let height = 3;
+    let width = (area.width.saturating_mul(60) / 100)
+        .max(40)
+        .min(area.width.saturating_sub(4));
+    let height = 3.min(area.height);
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let input_area = Rect::new(x, y, width, height);
@@ -260,6 +264,10 @@ pub(super) fn render_input_overlay(frame: &mut Frame, app: &App) {
     // Set cursor position
     if !input_value.is_empty() || app.is_input_mode() {
         let cursor_x = app.input.visual_cursor().saturating_sub(scroll);
-        frame.set_cursor_position(Position::new(inner_area.x + cursor_x as u16, inner_area.y));
+        let cursor_x = (cursor_x as u16).min(inner_area.width.saturating_sub(1));
+        frame.set_cursor_position(Position::new(
+            inner_area.x.saturating_add(cursor_x),
+            inner_area.y,
+        ));
     }
 }

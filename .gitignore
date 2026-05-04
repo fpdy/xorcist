@@ -16,3 +16,8 @@ AGENTS.pi-orchestrator.md
 context.md
 .env
 .pi/.env
+
+# pizor
+.orchestrator/
+.env
+.pi/.env

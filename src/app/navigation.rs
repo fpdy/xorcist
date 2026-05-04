@@ -27,6 +27,10 @@ impl App {
 
     /// Ensure the selected line is visible in the viewport.
     pub fn ensure_selected_visible(&mut self, viewport_height: usize) {
+        if viewport_height == 0 {
+            return;
+        }
+
         if let Some(line_idx) = self.selected_line_index() {
             // If selected line is above viewport, scroll up
             if line_idx < self.scroll_offset {

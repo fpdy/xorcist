@@ -17,18 +17,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::Diff => diff::render_diff_view(frame, app),
     }
 
-    // Render input overlay if in input mode
-    if app.is_input_mode() {
-        overlays::render_input_overlay(frame, app);
-    }
-
-    // Render help modal on top if visible
+    // Render help with active-view priority, below modal and input overlays.
     if app.show_help {
         overlays::render_help(frame);
     }
 
-    // Render modal dialog if open
+    // Render modal above help, matching key priority.
     if app.is_modal_open() {
         overlays::render_modal_overlay(frame, app);
+    }
+
+    // Render input overlay last because input mode has highest key priority.
+    if app.is_input_mode() {
+        overlays::render_input_overlay(frame, app);
     }
 }

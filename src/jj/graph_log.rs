@@ -33,11 +33,11 @@ static COMMIT_LINE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     // Match: graph_symbols change_id(8 letters) author timestamp [bookmarks]? description
     // - graph_symbols: non-letter characters at the start
     // - change_id: exactly 8 lowercase letters
-    // - author: non-whitespace characters
-    // - timestamp: non-whitespace characters (e.g., "1h", "2d", "3mo")
+    // - author: anything up to the shortened timestamp (supports spaces)
+    // - timestamp: shortened token from GRAPH_LOG_TEMPLATE (e.g., "1h", "2d", "3mo", "now")
     // - bookmarks: optional, wrapped in [] (e.g., "[main,dev]")
     // - description: everything after (may be empty)
-    Regex::new(r"^[^a-z]*([a-z]{8})\s+(\S+)\s+(\S+)\s*(?:\[([^\]]*)\]\s*)?(.*)$")
+    Regex::new(r"^[^a-z]*([a-z]{8})\s+(.+?)\s+(now|\d+(?:mo|[smhdwy]))\s*(?:\[([^\]]*)\]\s*)?(.*)$")
         .expect("Invalid regex pattern")
 });
 
@@ -307,6 +307,15 @@ mod tests {
         assert_eq!(line.change_id, Some("qzmtztvn".to_string()));
         assert_eq!(line.description, Some("feat: test".to_string()));
         assert_eq!(line.line_index, 0);
+    }
+
+    #[test]
+    fn test_graph_line_author_name_with_spaces() {
+        let line = GraphLine::new("@  qzmtztvn Alice Example 11m feat: test".to_string(), 0);
+
+        assert!(line.is_commit_line());
+        assert_eq!(line.change_id, Some("qzmtztvn".to_string()));
+        assert_eq!(line.description, Some("feat: test".to_string()));
     }
 
     #[test]

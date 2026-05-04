@@ -4,6 +4,7 @@ use super::*;
 use crate::jj::GraphLog;
 use crate::keys::dispatch_key_event;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{Terminal, backend::TestBackend};
 use std::path::Path;
 
 fn make_graph_log(count: usize) -> GraphLog {
@@ -37,6 +38,15 @@ fn expected_change_id(i: usize) -> String {
 
 fn make_runner() -> JjRunner {
     JjRunner::new().with_work_dir(Path::new("/tmp"))
+}
+
+fn render_app_at_size(app: &mut App, width: u16, height: u16) {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    terminal
+        .draw(|frame| crate::ui::render(frame, app))
+        .unwrap();
 }
 
 #[test]
@@ -105,6 +115,7 @@ fn test_empty_entries() {
     app.select_last();
     app.page_down(5);
     app.page_up(5);
+    app.ensure_selected_visible(0);
 
     assert_eq!(app.selected, 0);
 }
@@ -168,6 +179,118 @@ fn test_key_event_priority_is_input_modal_active_view() {
     dispatch_key_event(&mut app, esc, &event).unwrap();
 
     assert!(app.should_quit);
+}
+
+#[test]
+fn test_help_key_respects_input_and_modal_priority() {
+    let graph_log = make_graph_log(1);
+    let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+
+    let help = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
+    let event = Event::Key(help);
+
+    app.start_input_mode(InputMode::Describe);
+    dispatch_key_event(&mut app, help, &event).unwrap();
+    assert!(!app.show_help);
+    assert!(app.is_input_mode());
+
+    app.cancel_input_mode();
+    app.modal = ModalState::Confirm(PendingAction::GitPush);
+    dispatch_key_event(&mut app, help, &event).unwrap();
+    assert!(!app.show_help);
+    assert!(app.is_modal_open());
+
+    app.close_modal();
+    dispatch_key_event(&mut app, help, &event).unwrap();
+    assert!(app.show_help);
+}
+
+#[test]
+fn test_help_overlay_consumes_non_close_keys() {
+    let graph_log = make_graph_log(3);
+    let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+
+    app.show_help = true;
+
+    let down = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+    let down_event = Event::Key(down);
+    let handled = dispatch_key_event(&mut app, down, &down_event).unwrap();
+
+    assert!(handled);
+    assert!(app.show_help);
+    assert_eq!(app.selected, 0);
+
+    let quit = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+    let quit_event = Event::Key(quit);
+    let handled = dispatch_key_event(&mut app, quit, &quit_event).unwrap();
+
+    assert!(handled);
+    assert!(app.show_help);
+    assert!(!app.should_quit);
+}
+
+#[test]
+fn test_help_overlay_closes_on_esc_or_question_without_fallthrough() {
+    let graph_log = make_graph_log(3);
+    let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+
+    app.show_help = true;
+
+    let help = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
+    let help_event = Event::Key(help);
+    let handled = dispatch_key_event(&mut app, help, &help_event).unwrap();
+
+    assert!(handled);
+    assert!(!app.show_help);
+    assert_eq!(app.selected, 0);
+
+    app.show_help = true;
+
+    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    let esc_event = Event::Key(esc);
+    let handled = dispatch_key_event(&mut app, esc, &esc_event).unwrap();
+
+    assert!(handled);
+    assert!(!app.show_help);
+    assert!(!app.should_quit);
+}
+
+#[test]
+fn test_tiny_terminal_rendering_does_not_underflow() {
+    let graph_log = make_graph_log(1);
+    let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+
+    app.last_command_result = Some(CommandResult {
+        success: false,
+        message: "x".to_string(),
+    });
+    render_app_at_size(&mut app, 1, 1);
+
+    app.show_help = true;
+    render_app_at_size(&mut app, 1, 1);
+
+    app.show_help = false;
+    app.modal = ModalState::Confirm(PendingAction::GitPush);
+    render_app_at_size(&mut app, 1, 1);
+
+    app.close_modal();
+    app.start_input_mode(InputMode::Describe);
+    render_app_at_size(&mut app, 1, 1);
+}
+
+#[test]
+fn test_confirmation_uses_parsed_description() {
+    let graph_log = GraphLog::from_output("@  qzmtztvn Alice Example 1h feat: real description\n");
+    let mut app = App::new(graph_log, "/repo".to_string(), make_runner());
+
+    app.show_abandon_confirm();
+
+    match app.modal {
+        ModalState::Confirm(PendingAction::Abandon { description, .. }) => {
+            assert_eq!(description, "feat: real description");
+        }
+        _ => panic!("expected abandon confirmation"),
+    }
 }
 
 #[test]
