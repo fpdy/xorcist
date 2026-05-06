@@ -1,9 +1,12 @@
 //! Lazy loading methods for App.
 
-use crate::error::XorcistError;
-use crate::jj::fetch_graph_log_after;
+use std::sync::mpsc;
+use std::thread;
 
-use super::{App, DEFAULT_BATCH_SIZE, LOAD_MORE_THRESHOLD};
+use crate::error::XorcistError;
+use crate::jj::fetch_graph_log;
+
+use super::{App, DEFAULT_BATCH_SIZE, JobKind, JobResult, LOAD_MORE_THRESHOLD};
 
 impl App {
     /// Set the log entry limit and determine if more entries might be available.
@@ -48,35 +51,29 @@ impl App {
         self.pending_load_more = false;
     }
 
-    /// Actually load more entries.
-    /// Should be called after start_loading() and a redraw.
+    /// Start loading more entries in the background.
+    ///
+    /// Instead of appending a partial jj graph, increase the log limit and
+    /// re-fetch the graph as a whole so graph topology remains consistent.
     pub fn load_more_entries(&mut self) -> Result<bool, XorcistError> {
-        // Get the last commit's change_id to use as anchor
-        let last_selection = self.commit_count().saturating_sub(1);
-        let Some(after_change_id) = self.graph_log.change_id_for_selection(last_selection) else {
+        let current_limit = self.log_limit.unwrap_or(DEFAULT_BATCH_SIZE);
+        let requested_limit = current_limit.saturating_add(DEFAULT_BATCH_SIZE);
+        let previous_selection = self.selected_change_id().map(str::to_string);
+        let runner = self.runner();
+
+        let (tx, rx) = mpsc::channel();
+        if !self.start_job(JobKind::LoadMore, rx) {
             self.is_loading_more = false;
             return Ok(false);
-        };
-        let after_change_id = after_change_id.to_string();
-
-        // Fetch more entries
-        let batch_size = self.log_limit.unwrap_or(DEFAULT_BATCH_SIZE);
-        let additional = fetch_graph_log_after(&self.runner, &after_change_id, batch_size)?;
-
-        self.is_loading_more = false;
-
-        if additional.is_empty() || additional.commit_count() == 0 {
-            self.has_more_entries = false;
-            return Ok(false);
         }
 
-        // If we got fewer than requested, we've reached the end
-        if additional.commit_count() < batch_size {
-            self.has_more_entries = false;
-        }
-
-        // Merge additional lines into existing graph_log
-        self.graph_log.extend(additional);
+        thread::spawn(move || {
+            let _ = tx.send(JobResult::LoadMore {
+                previous_selection,
+                requested_limit,
+                result: fetch_graph_log(&*runner, Some(requested_limit)),
+            });
+        });
         Ok(true)
     }
 }

@@ -75,22 +75,22 @@ When scrolling near the end of the log, additional entries are loaded automatica
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Open detail view |
-| `q` / `Esc` | Quit / Close view |
-| `?` | Toggle help |
+| `Enter` | Open selected revision details |
+| `q` / `Esc` | Quit / close view |
+| `?` | Open help / close help |
 
 ### jj Commands
 
 | Key | Command | Confirmation |
 |-----|---------|--------------|
-| `n` | `jj new` | No |
-| `N` | `jj new -m` (with message input) | No |
-| `e` | `jj edit` | No |
-| `d` | `jj describe -m` (message input) | No |
-| `b` | `jj bookmark set` (name input) | No |
-| `r` | `jj rebase -d` (destination input) | No |
-| `a` | `jj abandon` | Yes |
-| `s` | `jj squash` | Yes |
+| `n` | `jj new <rev>` | No |
+| `N` | `jj new <rev> -m <msg>` (message input) | No |
+| `e` | `jj edit <rev>` | No |
+| `d` | `jj describe <rev> -m <msg>` (message input) | No |
+| `b` | `jj bookmark set <name> -r <rev>` (name input) | No |
+| `r` | `jj rebase -r <rev> -d <dest>` (destination input) | No |
+| `a` | `jj abandon <rev>` | Yes |
+| `s` | `jj squash -r <rev>` | Yes |
 | `f` | `jj git fetch` | No |
 | `p` | `jj git push` | Yes |
 | `u` | `jj undo` | Yes |
@@ -105,6 +105,7 @@ When scrolling near the end of the log, additional entries are loaded automatica
 | `Ctrl+d` / `PageDown` | Page down |
 | `Ctrl+u` / `PageUp` | Page up |
 | `q` / `Esc` | Back to log |
+| `?` | Open help |
 
 ### Diff View
 
@@ -116,6 +117,7 @@ When scrolling near the end of the log, additional entries are loaded automatica
 | `Ctrl+u` / `PageUp` | Scroll diff up |
 | `←` / `→` | Scroll diff horizontally |
 | `q` / `Esc` | Back to detail |
+| `?` | Open help |
 
 ## Display
 

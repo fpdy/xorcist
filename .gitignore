@@ -10,14 +10,11 @@ CLAUDE.md
 .agents/
 .pi/
 
-# pi-zellij-orchestrator
-.orchestrator/
-AGENTS.pi-orchestrator.md
-context.md
-.env
-.pi/.env
+.env*
 
 # pizor
-.orchestrator/
-.env
 .pi/.env
+.pizor/
+context.md
+AGENTS.pizor.md
+

@@ -6,6 +6,9 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
+use crate::actions::{
+    ActionSpec, DIFF_ACTIONS, GENERAL_ACTIONS, JJ_COMMAND_ACTIONS, NAVIGATION_ACTIONS, action_by_id,
+};
 use crate::app::{App, InputMode, ModalState};
 
 /// Render the help modal.
@@ -15,130 +18,7 @@ pub(super) fn render_help(frame: &mut Frame) {
     // Clear the area first to avoid background bleed-through
     frame.render_widget(Clear, area);
 
-    let help_lines = vec![
-        Line::styled(
-            "─── Keyboard Shortcuts ───",
-            Style::default().fg(Color::Cyan).bold(),
-        ),
-        Line::raw(""),
-        Line::styled("  Navigation", Style::default().bold()),
-        Line::from(vec![
-            Span::styled("  j / ↓      ", Style::default().fg(Color::Yellow)),
-            Span::raw("Move down"),
-        ]),
-        Line::from(vec![
-            Span::styled("  k / ↑      ", Style::default().fg(Color::Yellow)),
-            Span::raw("Move up"),
-        ]),
-        Line::from(vec![
-            Span::styled("  g / Home   ", Style::default().fg(Color::Yellow)),
-            Span::raw("Go to top"),
-        ]),
-        Line::from(vec![
-            Span::styled("  G / End    ", Style::default().fg(Color::Yellow)),
-            Span::raw("Go to bottom"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Ctrl+d     ", Style::default().fg(Color::Yellow)),
-            Span::raw("Page down"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Ctrl+u     ", Style::default().fg(Color::Yellow)),
-            Span::raw("Page up"),
-        ]),
-        Line::raw(""),
-        Line::styled("  jj Commands", Style::default().bold()),
-        Line::from(vec![
-            Span::styled("  n          ", Style::default().fg(Color::Yellow)),
-            Span::raw("New change"),
-        ]),
-        Line::from(vec![
-            Span::styled("  N          ", Style::default().fg(Color::Yellow)),
-            Span::raw("New change with message"),
-        ]),
-        Line::from(vec![
-            Span::styled("  e          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Edit revision"),
-        ]),
-        Line::from(vec![
-            Span::styled("  d          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Describe revision"),
-        ]),
-        Line::from(vec![
-            Span::styled("  b          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Set bookmark"),
-        ]),
-        Line::from(vec![
-            Span::styled("  a          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Abandon revision"),
-        ]),
-        Line::from(vec![
-            Span::styled("  s          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Squash into parent"),
-        ]),
-        Line::from(vec![
-            Span::styled("  f          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Git fetch"),
-        ]),
-        Line::from(vec![
-            Span::styled("  p          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Git push"),
-        ]),
-        Line::from(vec![
-            Span::styled("  u          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Undo last operation"),
-        ]),
-        Line::from(vec![
-            Span::styled("  r          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Rebase to destination"),
-        ]),
-        Line::raw(""),
-        Line::styled("  Detail View", Style::default().bold()),
-        Line::from(vec![
-            Span::styled("  d          ", Style::default().fg(Color::Yellow)),
-            Span::raw("View file diffs"),
-        ]),
-        Line::raw(""),
-        Line::styled("  Diff View", Style::default().bold()),
-        Line::from(vec![
-            Span::styled("  j / ↓      ", Style::default().fg(Color::Yellow)),
-            Span::raw("Select next file"),
-        ]),
-        Line::from(vec![
-            Span::styled("  k / ↑      ", Style::default().fg(Color::Yellow)),
-            Span::raw("Select previous file"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Ctrl+d/u   ", Style::default().fg(Color::Yellow)),
-            Span::raw("Scroll diff vertically"),
-        ]),
-        Line::from(vec![
-            Span::styled("  ← / →      ", Style::default().fg(Color::Yellow)),
-            Span::raw("Scroll diff horizontally"),
-        ]),
-        Line::from(vec![
-            Span::styled("  q / Esc    ", Style::default().fg(Color::Yellow)),
-            Span::raw("Back to detail"),
-        ]),
-        Line::raw(""),
-        Line::styled("  General", Style::default().bold()),
-        Line::from(vec![
-            Span::styled("  Enter      ", Style::default().fg(Color::Yellow)),
-            Span::raw("Open detail view"),
-        ]),
-        Line::from(vec![
-            Span::styled("  q          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Quit / Close view"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Esc        ", Style::default().fg(Color::Yellow)),
-            Span::raw("Close detail / help"),
-        ]),
-        Line::from(vec![
-            Span::styled("  ?          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Toggle this help"),
-        ]),
-    ];
+    let help_lines = build_help_lines();
 
     let help_widget = Paragraph::new(help_lines).block(
         Block::default()
@@ -148,6 +28,59 @@ pub(super) fn render_help(frame: &mut Frame) {
     );
 
     frame.render_widget(help_widget, area);
+}
+
+fn build_help_lines() -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled(
+        "─── Keyboard Shortcuts ───",
+        Style::default().fg(Color::Cyan).bold(),
+    )];
+
+    push_section(&mut lines, "Navigation", NAVIGATION_ACTIONS);
+    push_section(&mut lines, "jj Commands", JJ_COMMAND_ACTIONS);
+
+    lines.push(Line::raw(""));
+    lines.push(Line::styled("  Detail View", Style::default().bold()));
+    push_action(
+        &mut lines,
+        action_by_id("detail.open_diff").expect("known action"),
+    );
+    push_action(
+        &mut lines,
+        action_by_id("view.page_down").expect("known action"),
+    );
+    push_action(
+        &mut lines,
+        action_by_id("view.page_up").expect("known action"),
+    );
+    push_action(
+        &mut lines,
+        action_by_id("detail.back").expect("known action"),
+    );
+
+    push_section(&mut lines, "Diff View", DIFF_ACTIONS);
+    push_section(&mut lines, "General", GENERAL_ACTIONS);
+
+    lines
+}
+
+fn push_section(lines: &mut Vec<Line<'static>>, title: &'static str, actions: &[ActionSpec]) {
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(format!("  {title}"), Style::default().bold()));
+    for action in actions {
+        push_action(lines, action);
+    }
+}
+
+fn push_action(lines: &mut Vec<Line<'static>>, action: &ActionSpec) {
+    debug_assert!(action.has_valid_metadata());
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:<20}", action.key_label),
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(action.help),
+    ]));
 }
 
 /// Calculate a centered rectangle with given percentage of width and height.

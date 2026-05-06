@@ -1,22 +1,14 @@
 //! jj command execution methods for App.
 
-use crate::error::XorcistError;
-use crate::jj::{fetch_diff_file, fetch_graph_log, parse_diff_summary};
+use std::sync::mpsc;
+use std::thread;
 
-use super::{App, CommandResult, DiffState, ModalState, PendingAction, View};
+use crate::error::XorcistError;
+use crate::jj::{JjBackend, fetch_diff_file, fetch_graph_log, parse_diff_summary};
+
+use super::{App, CommandResult, DiffState, JobKind, JobResult, ModalState, PendingAction, View};
 
 impl App {
-    /// Refresh log entries.
-    pub fn refresh_log(&mut self) -> Result<(), XorcistError> {
-        self.graph_log = fetch_graph_log(&self.runner, self.log_limit)?;
-        // Clamp selection to valid range
-        let count = self.commit_count();
-        if count > 0 && self.selected >= count {
-            self.selected = count - 1;
-        }
-        Ok(())
-    }
-
     /// Handle command result (store for status display).
     pub(super) fn handle_command_result(&mut self, result: Result<CommandResult, XorcistError>) {
         match result {
@@ -32,13 +24,89 @@ impl App {
         }
     }
 
-    /// Store the result of a mutating jj command, then refresh the log.
-    fn handle_command_result_and_refresh_log(
-        &mut self,
-        result: Result<CommandResult, XorcistError>,
-    ) -> Result<(), XorcistError> {
-        self.handle_command_result(result);
-        self.refresh_log()
+    fn start_command_and_refresh<F>(&mut self, kind: JobKind, command: F)
+    where
+        F: FnOnce(&dyn JjBackend) -> Result<CommandResult, XorcistError> + Send + 'static,
+    {
+        let runner = self.runner();
+        let limit = self.log_limit;
+        let (tx, rx) = mpsc::channel();
+        if !self.start_job(kind, rx) {
+            return;
+        }
+        thread::spawn(move || {
+            let command_result = command(&*runner);
+            let graph_result = fetch_graph_log(&*runner, limit);
+            let _ = tx.send(JobResult::CommandAndRefresh {
+                command: command_result,
+                graph_log: graph_result,
+            });
+        });
+    }
+
+    pub(crate) fn apply_job_result(&mut self, result: JobResult) -> Result<(), XorcistError> {
+        match result {
+            JobResult::LoadMore {
+                previous_selection,
+                requested_limit,
+                result,
+            } => {
+                let graph_log = result?;
+                let loaded_count = graph_log.commit_count();
+                self.graph_log = graph_log;
+                self.log_limit = Some(requested_limit);
+                self.has_more_entries = loaded_count >= requested_limit;
+                self.restore_or_clamp_selection(previous_selection.as_deref());
+            }
+            JobResult::CommandAndRefresh { command, graph_log } => {
+                self.handle_command_result(command);
+                self.graph_log = graph_log?;
+                self.restore_or_clamp_selection(None);
+            }
+            JobResult::Detail(result) => {
+                let show_output = result?;
+                self.detail_state = Some(super::DetailState {
+                    show_output,
+                    scroll: 0,
+                    content_height: 0,
+                });
+                self.view = View::Detail;
+            }
+            JobResult::Diff {
+                change_id,
+                files,
+                initial_diff,
+            } => {
+                let files = files?;
+                self.diff_state = DiffState::new(change_id, files);
+                if let Some(result) = initial_diff {
+                    self.diff_state.diff_lines = result?.lines().map(|s| s.to_string()).collect();
+                }
+                self.view = View::Diff;
+            }
+            JobResult::DiffText(result) => {
+                self.diff_state.diff_lines = result?.lines().map(|s| s.to_string()).collect();
+                self.diff_state.diff_scroll = 0;
+                self.diff_state.diff_h_scroll = 0;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn restore_or_clamp_selection(&mut self, change_id: Option<&str>) {
+        if let Some(change_id) = change_id
+            && let Some(selection) = self.graph_log.selection_for_change_id(change_id)
+        {
+            self.selected = selection;
+            return;
+        }
+
+        let count = self.commit_count();
+        if count == 0 {
+            self.selected = 0;
+        } else if self.selected >= count {
+            self.selected = count - 1;
+        }
     }
 
     /// Show confirmation dialog for abandon.
@@ -88,20 +156,24 @@ impl App {
 
         match action {
             PendingAction::Abandon { change_id, .. } => {
-                let result = self.runner.execute_abandon(&change_id);
-                self.handle_command_result_and_refresh_log(result)?;
+                self.start_command_and_refresh(JobKind::MutatingCommand, move |runner| {
+                    runner.execute_abandon(&change_id)
+                });
             }
             PendingAction::Squash { change_id, .. } => {
-                let result = self.runner.execute_squash(&change_id);
-                self.handle_command_result_and_refresh_log(result)?;
+                self.start_command_and_refresh(JobKind::MutatingCommand, move |runner| {
+                    runner.execute_squash(&change_id)
+                });
             }
             PendingAction::GitPush => {
-                let result = self.runner.execute_git_push();
-                self.handle_command_result_and_refresh_log(result)?;
+                self.start_command_and_refresh(JobKind::GitPush, |runner| {
+                    runner.execute_git_push()
+                });
             }
             PendingAction::Undo => {
-                let result = self.runner.execute_undo();
-                self.handle_command_result_and_refresh_log(result)?;
+                self.start_command_and_refresh(JobKind::MutatingCommand, |runner| {
+                    runner.execute_undo()
+                });
             }
         }
 
@@ -110,8 +182,7 @@ impl App {
 
     /// Execute `jj git fetch`.
     pub fn execute_git_fetch(&mut self) -> Result<(), XorcistError> {
-        let result = self.runner.execute_git_fetch();
-        self.handle_command_result_and_refresh_log(result)?;
+        self.start_command_and_refresh(JobKind::GitFetch, |runner| runner.execute_git_fetch());
         Ok(())
     }
 
@@ -121,8 +192,9 @@ impl App {
             return Ok(());
         };
         let change_id = change_id.to_string();
-        let result = self.runner.execute_new(&change_id);
-        self.handle_command_result_and_refresh_log(result)?;
+        self.start_command_and_refresh(JobKind::MutatingCommand, move |runner| {
+            runner.execute_new(&change_id)
+        });
         Ok(())
     }
 
@@ -132,12 +204,14 @@ impl App {
             return Ok(());
         };
         let change_id = change_id.to_string();
-        let result = if message.is_empty() {
-            self.runner.execute_new(&change_id)
-        } else {
-            self.runner.execute_new_with_message(&change_id, message)
-        };
-        self.handle_command_result_and_refresh_log(result)?;
+        let message = message.to_string();
+        self.start_command_and_refresh(JobKind::MutatingCommand, move |runner| {
+            if message.is_empty() {
+                runner.execute_new(&change_id)
+            } else {
+                runner.execute_new_with_message(&change_id, &message)
+            }
+        });
         Ok(())
     }
 
@@ -147,8 +221,9 @@ impl App {
             return Ok(());
         };
         let change_id = change_id.to_string();
-        let result = self.runner.execute_edit(&change_id);
-        self.handle_command_result_and_refresh_log(result)?;
+        self.start_command_and_refresh(JobKind::MutatingCommand, move |runner| {
+            runner.execute_edit(&change_id)
+        });
         Ok(())
     }
 
@@ -158,8 +233,10 @@ impl App {
             return Ok(());
         };
         let change_id = change_id.to_string();
-        let result = self.runner.execute_describe(&change_id, message);
-        self.handle_command_result_and_refresh_log(result)?;
+        let message = message.to_string();
+        self.start_command_and_refresh(JobKind::MutatingCommand, move |runner| {
+            runner.execute_describe(&change_id, &message)
+        });
         Ok(())
     }
 
@@ -176,8 +253,10 @@ impl App {
             return Ok(());
         };
         let change_id = change_id.to_string();
-        let result = self.runner.execute_bookmark_set(name, &change_id);
-        self.handle_command_result_and_refresh_log(result)?;
+        let name = name.to_string();
+        self.start_command_and_refresh(JobKind::MutatingCommand, move |runner| {
+            runner.execute_bookmark_set(&name, &change_id)
+        });
         Ok(())
     }
 
@@ -195,8 +274,10 @@ impl App {
             return Ok(());
         };
         let change_id = change_id.to_string();
-        let result = self.runner.execute_rebase(&change_id, destination);
-        self.handle_command_result_and_refresh_log(result)?;
+        let destination = destination.to_string();
+        self.start_command_and_refresh(JobKind::MutatingCommand, move |runner| {
+            runner.execute_rebase(&change_id, &destination)
+        });
         Ok(())
     }
 
@@ -206,21 +287,26 @@ impl App {
             return Ok(());
         };
         let change_id = detail.show_output.change_id.clone();
-
-        // Fetch diff summary
-        let summary_output =
-            self.runner
-                .run_capture(&["diff", "-r", &change_id, "--color=never", "--summary"])?;
-        let files = parse_diff_summary(&summary_output);
-
-        self.diff_state = DiffState::new(change_id, files);
-
-        // Fetch initial diff text if files exist
-        if !self.diff_state.files.is_empty() {
-            self.refresh_diff_text()?;
+        let runner = self.runner();
+        let (tx, rx) = mpsc::channel();
+        if !self.start_job(JobKind::OpenDiff, rx) {
+            return Ok(());
         }
-
-        self.view = View::Diff;
+        thread::spawn(move || {
+            let files_result = runner
+                .run_capture(&["diff", "-r", &change_id, "--color=never", "--summary"])
+                .map(|output| parse_diff_summary(&output));
+            let initial_diff = files_result.as_ref().ok().and_then(|files| {
+                files
+                    .first()
+                    .map(|file| fetch_diff_file(&*runner, &change_id, &file.path))
+            });
+            let _ = tx.send(JobResult::Diff {
+                change_id,
+                files: files_result,
+                initial_diff,
+            });
+        });
         Ok(())
     }
 
@@ -231,10 +317,17 @@ impl App {
             return Ok(());
         };
         let path = file.path.clone();
-        let output = fetch_diff_file(&self.runner, &self.diff_state.change_id, &path)?;
-        self.diff_state.diff_lines = output.lines().map(|s| s.to_string()).collect();
-        self.diff_state.diff_scroll = 0; // Reset vertical scroll on file change
-        self.diff_state.diff_h_scroll = 0; // Reset horizontal scroll on file change
+        let change_id = self.diff_state.change_id.clone();
+        let runner = self.runner();
+        let (tx, rx) = mpsc::channel();
+        if !self.start_job(JobKind::RefreshDiff, rx) {
+            return Ok(());
+        }
+        thread::spawn(move || {
+            let _ = tx.send(JobResult::DiffText(fetch_diff_file(
+                &*runner, &change_id, &path,
+            )));
+        });
         Ok(())
     }
 }
