@@ -7,10 +7,10 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::jj::{DiffStatus, ShowOutput};
+use crate::{jj::ShowOutput, ui::diff_status_presentation};
 
 /// Render the detail view.
-pub(super) fn render_detail_view(frame: &mut Frame, app: &mut App) {
+pub(super) fn render_detail_view(frame: &mut Frame, app: &App) {
     let Some(state) = &app.detail_state else {
         return;
     };
@@ -38,7 +38,7 @@ pub(super) fn render_detail_view(frame: &mut Frame, app: &mut App) {
 }
 
 /// Render the detail content with scrolling.
-fn render_detail_content(frame: &mut Frame, area: Rect, app: &mut App) {
+fn render_detail_content(frame: &mut Frame, area: Rect, app: &App) {
     let Some(state) = &app.detail_state else {
         return;
     };
@@ -47,10 +47,7 @@ fn render_detail_content(frame: &mut Frame, area: Rect, app: &mut App) {
     let lines = build_detail_lines(&state.show_output);
     let content_height = lines.len();
 
-    // Update content height in app state
-    app.set_detail_content_height(content_height);
-
-    // Get current scroll position (re-borrow after mutation)
+    // Get current scroll position.
     let scroll = app.detail_state.as_ref().map(|s| s.scroll).unwrap_or(0);
 
     let visible_height = area.height as usize;
@@ -152,13 +149,7 @@ fn build_detail_lines(output: &ShowOutput) -> Vec<Line<'static>> {
         Style::default().fg(Color::DarkGray),
     ));
     for entry in &output.diff_summary {
-        let (symbol, color) = match entry.status {
-            DiffStatus::Added => ("+", Color::Green),
-            DiffStatus::Modified => ("~", Color::Yellow),
-            DiffStatus::Deleted => ("-", Color::Red),
-            DiffStatus::Renamed => ("→", Color::Cyan),
-            DiffStatus::Copied => ("⊕", Color::Blue),
-        };
+        let (symbol, color) = diff_status_presentation(entry.status);
         lines.push(Line::from(vec![
             Span::styled(format!(" {symbol} "), Style::default().fg(color).bold()),
             Span::raw(entry.path.clone()),
@@ -173,6 +164,12 @@ fn build_detail_lines(output: &ShowOutput) -> Vec<Line<'static>> {
     }
 
     lines
+}
+
+pub(super) fn content_height(app: &App) -> Option<usize> {
+    app.detail_state
+        .as_ref()
+        .map(|state| build_detail_lines(&state.show_output).len())
 }
 
 /// Render the status bar for detail view.

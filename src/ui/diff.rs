@@ -7,13 +7,13 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::jj::DiffStatus;
+use crate::ui::diff_status_presentation;
 
 /// Minimum width for horizontal (side-by-side) diff layout.
-const MIN_WIDTH_FOR_HORIZONTAL_DIFF: u16 = 120;
+pub(super) const MIN_WIDTH_FOR_HORIZONTAL_DIFF: u16 = 120;
 
 /// Render the diff view.
-pub(super) fn render_diff_view(frame: &mut Frame, app: &mut App) {
+pub(super) fn render_diff_view(frame: &mut Frame, app: &App) {
     let chunks = Layout::vertical([
         Constraint::Length(1), // Title bar
         Constraint::Min(3),    // Content
@@ -61,21 +61,12 @@ pub(super) fn render_diff_view(frame: &mut Frame, app: &mut App) {
 }
 
 /// Render the file list in diff view.
-fn render_diff_file_list(frame: &mut Frame, area: Rect, app: &mut App) {
-    let visible_height = area.height.saturating_sub(1) as usize; // Account for border title
-    app.ensure_diff_file_visible(visible_height);
-
+fn render_diff_file_list(frame: &mut Frame, area: Rect, app: &App) {
     let state = &app.diff_state;
     let mut lines: Vec<Line> = Vec::new();
 
     for (idx, entry) in state.files.iter().enumerate() {
-        let (symbol, color) = match entry.status {
-            DiffStatus::Added => ("+", Color::Green),
-            DiffStatus::Modified => ("~", Color::Yellow),
-            DiffStatus::Deleted => ("-", Color::Red),
-            DiffStatus::Renamed => ("→", Color::Cyan),
-            DiffStatus::Copied => ("⊕", Color::Blue),
-        };
+        let (symbol, color) = diff_status_presentation(entry.status);
 
         let is_selected = idx == state.selected;
         let path_style = if is_selected {
@@ -109,13 +100,8 @@ fn render_diff_file_list(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 /// Render the diff text in diff view.
-fn render_diff_text(frame: &mut Frame, area: Rect, app: &mut App) {
+fn render_diff_text(frame: &mut Frame, area: Rect, app: &App) {
     let visible_height = area.height.saturating_sub(2) as usize; // Account for borders
-    let visible_width = area.width.saturating_sub(2) as usize; // Account for borders
-
-    // Clamp vertical and horizontal scroll
-    app.clamp_diff_scroll(visible_height);
-    app.clamp_diff_h_scroll(visible_width);
 
     let state = &app.diff_state;
     let h_scroll = state.diff_h_scroll;
@@ -173,7 +159,7 @@ fn render_diff_text(frame: &mut Frame, area: Rect, app: &mut App) {
 
 /// Render the status bar for diff view.
 fn render_diff_status_bar(frame: &mut Frame, area: Rect) {
-    let help_text = " j/k: select file  Ctrl+d/u: scroll  ←/→: pan  q/Esc: back ";
+    let help_text = " j/k: select file  Ctrl+d/u: scroll  ←/→: pan  q/Esc: back  ?: help ";
     let status_bar =
         Paragraph::new(help_text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
     frame.render_widget(status_bar, area);

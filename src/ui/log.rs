@@ -7,10 +7,11 @@ use ratatui::{
     widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
+use crate::actions::action_by_id;
 use crate::app::App;
 
 /// Render the log view.
-pub(super) fn render_log_view(frame: &mut Frame, app: &mut App) {
+pub(super) fn render_log_view(frame: &mut Frame, app: &App) {
     let chunks = Layout::vertical([
         Constraint::Length(1), // Title bar
         Constraint::Min(3),    // Log list
@@ -31,11 +32,8 @@ fn render_title_bar(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Render the log list with ANSI graph output.
-fn render_log_list(frame: &mut Frame, area: Rect, app: &mut App) {
+fn render_log_list(frame: &mut Frame, area: Rect, app: &App) {
     let viewport_height = area.height as usize;
-
-    // Ensure selected line is visible
-    app.ensure_selected_visible(viewport_height);
 
     // Get the selected line index for highlighting
     let selected_line_idx = app.selected_line_index();
@@ -161,6 +159,11 @@ fn render_log_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             " Loading more entries... ".to_string(),
             Style::default().bg(Color::DarkGray).fg(Color::Yellow),
         )
+    } else if let Some(job) = &app.current_job {
+        (
+            format!(" Running jj job: {job:?}... "),
+            Style::default().bg(Color::DarkGray).fg(Color::Yellow),
+        )
     } else if let Some(result) = &app.last_command_result {
         let color = if result.success {
             Color::Green
@@ -180,9 +183,7 @@ fn render_log_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             format!("[{} commits] ", app.commit_count())
         };
-        let help = format!(
-            " {count_info}n: new  e: edit  d: describe  b: bookmark  r: rebase  Enter: show  ?: help "
-        );
+        let help = format!(" {count_info}{} ", log_status_help());
         (help, Style::default().bg(Color::DarkGray).fg(Color::White))
     };
 
@@ -194,6 +195,25 @@ fn render_log_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 fn truncate_message(msg: &str, max_width: usize) -> String {
     let first_line = msg.lines().next().unwrap_or(msg);
     crate::text::truncate_str(first_line, max_width)
+}
+
+fn log_status_help() -> String {
+    [
+        ("jj.new", "new"),
+        ("jj.edit", "edit"),
+        ("jj.describe", "describe"),
+        ("jj.bookmark_set", "bookmark"),
+        ("jj.rebase", "rebase"),
+        ("log.open_detail", "detail"),
+        ("help.toggle", "help"),
+    ]
+    .into_iter()
+    .map(|(id, label)| {
+        let action = action_by_id(id).expect("status bar action metadata must exist");
+        format!("{}: {label}", action.key_label)
+    })
+    .collect::<Vec<_>>()
+    .join("  ")
 }
 
 #[cfg(test)]
@@ -227,6 +247,14 @@ mod tests {
         assert_eq!(
             truncate_message("Error: 失敗しました", 15),
             "Error: 失敗..."
+        );
+    }
+
+    #[test]
+    fn test_log_status_help_uses_action_metadata() {
+        assert_eq!(
+            log_status_help(),
+            "n: new  e: edit  d: describe  b: bookmark  r: rebase  Enter: detail  ?: help"
         );
     }
 }

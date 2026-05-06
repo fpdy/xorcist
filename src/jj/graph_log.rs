@@ -7,7 +7,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 use crate::error::XorcistError;
-use crate::jj::runner::JjRunner;
+use crate::jj::runner::JjBackend;
 
 /// Template for graph log output with shortened timestamps and bookmarks.
 ///
@@ -17,27 +17,33 @@ use crate::jj::runner::JjRunner;
 /// - timestamp: shortened format (e.g., "12h" instead of "12 hours ago")
 /// - bookmarks: comma-separated bookmark names wrapped in brackets (if any)
 /// - description: first line of commit message
-const GRAPH_LOG_TEMPLATE: &str = r#"separate(" ", change_id.shortest(8), author.name(), author.timestamp().ago().replace(regex:"\\s+seconds? ago", "s").replace(regex:"\\s+minutes? ago", "m").replace(regex:"\\s+hours? ago", "h").replace(regex:"\\s+days? ago", "d").replace(regex:"\\s+weeks? ago", "w").replace(regex:"\\s+months? ago", "mo").replace(regex:"\\s+years? ago", "y"), if(bookmarks, "[" ++ bookmarks.map(|b| b.name()).join(",") ++ "]"), description.first_line())"#;
+const GRAPH_LOG_TEMPLATE: &str = r#"separate(" ", "\x1f" ++ change_id.shortest(8) ++ "\x1f", author.name(), author.timestamp().ago().replace(regex:"\\s+seconds? ago", "s").replace(regex:"\\s+minutes? ago", "m").replace(regex:"\\s+hours? ago", "h").replace(regex:"\\s+days? ago", "d").replace(regex:"\\s+weeks? ago", "w").replace(regex:"\\s+months? ago", "mo").replace(regex:"\\s+years? ago", "y"), if(bookmarks, "[" ++ bookmarks.map(|b| b.name()).join(",") ++ "]"), "\x1e" ++ description.first_line() ++ "\x1e")"#;
+
+const CHANGE_ID_MARKER: char = '\x1f';
+const DESCRIPTION_MARKER: char = '\x1e';
 
 /// Regex pattern for extracting change_id from graph output.
-/// Matches 8 lowercase letters after graph symbols.
+/// Matches lowercase jj change ids after graph symbols.
+#[cfg(test)]
 static CHANGE_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     // Match after graph symbols (@, ◆, ○, ●, etc.) and whitespace
-    // The change_id is 8 lowercase letters
-    Regex::new(r"^[^a-z]*([a-z]{8})\s").expect("Invalid regex pattern")
+    // The change_id is lowercase letters and may be longer than 8 chars when
+    // jj needs a longer unique prefix.
+    Regex::new(r"^[^a-z]*([a-z]{8,})\s").expect("Invalid regex pattern")
 });
 
 /// Regex pattern for extracting all fields from a commit line.
 /// Format: `change_id author timestamp [bookmarks] description`
 static COMMIT_LINE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    // Match: graph_symbols change_id(8 letters) author timestamp [bookmarks]? description
+    // Match: graph_symbols change_id author timestamp [bookmarks]? description
     // - graph_symbols: non-letter characters at the start
-    // - change_id: exactly 8 lowercase letters
-    // - author: anything up to the shortened timestamp (supports spaces)
-    // - timestamp: shortened token from GRAPH_LOG_TEMPLATE (e.g., "1h", "2d", "3mo", "now")
+    // - change_id: at least 8 lowercase letters
+    // - author: anything up to the timestamp (supports spaces)
+    // - timestamp: common compact jj display tokens; this is intentionally
+    //   broader than the template's current replacements.
     // - bookmarks: optional, wrapped in [] (e.g., "[main,dev]")
     // - description: everything after (may be empty)
-    Regex::new(r"^[^a-z]*([a-z]{8})\s+(.+?)\s+(now|\d+(?:mo|[smhdwy]))\s*(?:\[([^\]]*)\]\s*)?(.*)$")
+    Regex::new(r"^[^a-z]*([a-z]{8,})\s+(.+?)\s+(now|yesterday|\d{4}-\d{2}-\d{2}|\d+(?:mo|[smhdwy]))\s*(?:\[([^\]]*)\]\s*)?(.*)$")
         .expect("Invalid regex pattern")
 });
 
@@ -57,21 +63,20 @@ pub struct GraphLine {
     /// Description extracted from this line, if any.
     /// Empty string if the commit has no description.
     pub description: Option<String>,
-    /// Line index in the full output.
-    pub line_index: usize,
 }
 
 impl GraphLine {
     /// Create a new GraphLine from raw text.
-    fn new(raw: String, line_index: usize) -> Self {
-        let plain = strip_ansi(&raw);
-        let (change_id, description) = extract_commit_fields(&plain);
+    fn new(raw: String) -> Self {
+        let parse_plain = strip_ansi(&raw);
+        let (change_id, description) = extract_commit_fields(&parse_plain);
+        let raw = strip_parse_markers(&raw);
+        let plain = strip_parse_markers(&parse_plain);
         Self {
             raw,
             plain,
             change_id,
             description,
-            line_index,
         }
     }
 
@@ -95,8 +100,7 @@ impl GraphLog {
     pub fn from_output(output: &str) -> Self {
         let lines: Vec<GraphLine> = output
             .lines()
-            .enumerate()
-            .map(|(idx, line)| GraphLine::new(line.to_string(), idx))
+            .map(|line| GraphLine::new(line.to_string()))
             .collect();
 
         let commit_line_indices: Vec<usize> = lines
@@ -129,22 +133,16 @@ impl GraphLog {
     }
 
     /// Check if the log is empty.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.commit_line_indices.is_empty()
     }
 
-    /// Extend this graph log with another one.
-    ///
-    /// This is used for incremental loading of more entries.
-    pub fn extend(&mut self, other: GraphLog) {
-        let offset = self.lines.len();
-        for mut line in other.lines {
-            line.line_index += offset;
-            self.lines.push(line);
-        }
-        for idx in other.commit_line_indices {
-            self.commit_line_indices.push(idx + offset);
-        }
+    /// Find the selectable index for a change id.
+    pub fn selection_for_change_id(&self, change_id: &str) -> Option<usize> {
+        self.commit_line_indices
+            .iter()
+            .position(|&line_idx| self.lines[line_idx].change_id.as_deref() == Some(change_id))
     }
 }
 
@@ -153,10 +151,16 @@ fn strip_ansi(s: &str) -> String {
     ANSI_STRIP_REGEX.replace_all(s, "").to_string()
 }
 
+fn strip_parse_markers(s: &str) -> String {
+    s.chars()
+        .filter(|ch| *ch != CHANGE_ID_MARKER && *ch != DESCRIPTION_MARKER)
+        .collect()
+}
+
 /// Extract change_id from a plain text line.
 ///
-/// The change_id is the first 8 lowercase letters after graph symbols.
-#[allow(dead_code)]
+/// The change_id is the first lowercase id after graph symbols.
+#[cfg(test)]
 fn extract_change_id(plain: &str) -> Option<String> {
     CHANGE_ID_REGEX
         .captures(plain)
@@ -168,6 +172,10 @@ fn extract_change_id(plain: &str) -> Option<String> {
 /// Returns (change_id, description) where description is Some for commit lines.
 /// Note: bookmarks (group 4) are handled by the template itself - they appear in the raw output.
 fn extract_commit_fields(plain: &str) -> (Option<String>, Option<String>) {
+    if let Some(fields) = extract_marked_commit_fields(plain) {
+        return fields;
+    }
+
     match COMMIT_LINE_REGEX.captures(plain) {
         Some(cap) => {
             let change_id = cap[1].to_string();
@@ -179,8 +187,27 @@ fn extract_commit_fields(plain: &str) -> (Option<String>, Option<String>) {
     }
 }
 
+fn extract_marked_commit_fields(plain: &str) -> Option<(Option<String>, Option<String>)> {
+    let change_id = extract_between_markers(plain, CHANGE_ID_MARKER)?;
+    let description = extract_between_markers(plain, DESCRIPTION_MARKER).unwrap_or_default();
+    if change_id.len() < 8 || !change_id.chars().all(|ch| ch.is_ascii_lowercase()) {
+        return None;
+    }
+    Some((Some(change_id), Some(description)))
+}
+
+fn extract_between_markers(s: &str, marker: char) -> Option<String> {
+    let start = s.find(marker)?;
+    let rest = &s[start + marker.len_utf8()..];
+    let end = rest.find(marker)?;
+    Some(rest[..end].to_string())
+}
+
 /// Fetch graph log from jj with colored output.
-pub fn fetch_graph_log(runner: &JjRunner, limit: Option<usize>) -> Result<GraphLog, XorcistError> {
+pub fn fetch_graph_log(
+    runner: &dyn JjBackend,
+    limit: Option<usize>,
+) -> Result<GraphLog, XorcistError> {
     let mut args = vec![
         "log",
         "--color",
@@ -197,31 +224,6 @@ pub fn fetch_graph_log(runner: &JjRunner, limit: Option<usize>) -> Result<GraphL
         args.push("-n");
         args.push(&limit_str);
     }
-
-    let output = runner.run_capture(&args)?;
-    Ok(GraphLog::from_output(&output))
-}
-
-/// Fetch additional graph log entries after a given change_id.
-pub fn fetch_graph_log_after(
-    runner: &JjRunner,
-    after_change_id: &str,
-    limit: usize,
-) -> Result<GraphLog, XorcistError> {
-    let revset = format!("::{after_change_id}-");
-    let limit_str = limit.to_string();
-
-    let args = vec![
-        "log",
-        "--color",
-        "always",
-        "-T",
-        GRAPH_LOG_TEMPLATE,
-        "-r",
-        &revset,
-        "-n",
-        &limit_str,
-    ];
 
     let output = runner.run_capture(&args)?;
     Ok(GraphLog::from_output(&output))
@@ -281,37 +283,76 @@ mod tests {
     }
 
     #[test]
-    fn test_change_id_contract_requires_exactly_8_characters() {
+    fn test_change_id_contract_accepts_at_least_8_characters() {
         assert_eq!(extract_change_id("@  abcdefg Author 1h too short"), None);
         assert_eq!(
             extract_change_id("@  abcdefgh Author 1h exact"),
             Some("abcdefgh".to_string())
         );
-        assert_eq!(extract_change_id("@  abcdefghi Author 1h too long"), None);
+        assert_eq!(
+            extract_change_id("@  abcdefghi Author 1h longer"),
+            Some("abcdefghi".to_string())
+        );
 
-        let too_short = GraphLine::new("@  abcdefg Author 1h too short".to_string(), 0);
-        let exact = GraphLine::new("@  abcdefgh Author 1h exact".to_string(), 1);
-        let too_long = GraphLine::new("@  abcdefghi Author 1h too long".to_string(), 2);
+        let too_short = GraphLine::new("@  abcdefg Author 1h too short".to_string());
+        let exact = GraphLine::new("@  abcdefgh Author 1h exact".to_string());
+        let longer = GraphLine::new("@  abcdefghi Author 1h longer".to_string());
 
         assert!(!too_short.is_commit_line());
         assert!(exact.is_commit_line());
-        assert!(!too_long.is_commit_line());
+        assert!(longer.is_commit_line());
+    }
+
+    #[test]
+    fn test_graph_line_tolerates_timestamp_token_changes() {
+        let line = GraphLine::new("@  qzmtztvn Alice yesterday feat: test".to_string());
+
+        assert!(line.is_commit_line());
+        assert_eq!(line.change_id, Some("qzmtztvn".to_string()));
+        assert_eq!(line.description, Some("feat: test".to_string()));
+    }
+
+    #[test]
+    fn test_graph_line_prefers_marked_fields_and_hides_markers() {
+        let raw = "@  \x1fqzmtztvn\x1f Alice any timestamp [main] \x1efeat: marked\x1e";
+        let line = GraphLine::new(raw.to_string());
+
+        assert!(line.is_commit_line());
+        assert_eq!(line.change_id, Some("qzmtztvn".to_string()));
+        assert_eq!(line.description, Some("feat: marked".to_string()));
+        assert_eq!(
+            line.plain,
+            "@  qzmtztvn Alice any timestamp [main] feat: marked"
+        );
+        assert_eq!(
+            line.raw,
+            "@  qzmtztvn Alice any timestamp [main] feat: marked"
+        );
+    }
+
+    #[test]
+    fn test_selection_for_change_id() {
+        let log =
+            GraphLog::from_output("@  qzmtztvn Author 1h first\n◆  abcdefghi Author 1d second");
+
+        assert_eq!(log.selection_for_change_id("qzmtztvn"), Some(0));
+        assert_eq!(log.selection_for_change_id("abcdefghi"), Some(1));
+        assert_eq!(log.selection_for_change_id("missing"), None);
     }
 
     #[test]
     fn test_graph_line_creation() {
         let raw = "\x1b[1m@\x1b[0m  \x1b[1m\x1b[38;5;5mq\x1b[0mzmtztvn 1XD 11m feat: test";
-        let line = GraphLine::new(raw.to_string(), 0);
+        let line = GraphLine::new(raw.to_string());
 
         assert!(line.is_commit_line());
         assert_eq!(line.change_id, Some("qzmtztvn".to_string()));
         assert_eq!(line.description, Some("feat: test".to_string()));
-        assert_eq!(line.line_index, 0);
     }
 
     #[test]
     fn test_graph_line_author_name_with_spaces() {
-        let line = GraphLine::new("@  qzmtztvn Alice Example 11m feat: test".to_string(), 0);
+        let line = GraphLine::new("@  qzmtztvn Alice Example 11m feat: test".to_string());
 
         assert!(line.is_commit_line());
         assert_eq!(line.change_id, Some("qzmtztvn".to_string()));
@@ -321,7 +362,7 @@ mod tests {
     #[test]
     fn test_graph_line_empty_description() {
         let raw = "@  qzmtztvn Author 1h ";
-        let line = GraphLine::new(raw.to_string(), 0);
+        let line = GraphLine::new(raw.to_string());
 
         assert!(line.is_commit_line());
         assert_eq!(line.change_id, Some("qzmtztvn".to_string()));
@@ -332,7 +373,7 @@ mod tests {
     fn test_graph_line_no_description() {
         // Line with no trailing space - description should still be captured as empty
         let raw = "@  qzmtztvn Author 1h";
-        let line = GraphLine::new(raw.to_string(), 0);
+        let line = GraphLine::new(raw.to_string());
 
         assert!(line.is_commit_line());
         assert_eq!(line.change_id, Some("qzmtztvn".to_string()));

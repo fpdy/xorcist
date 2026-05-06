@@ -1,11 +1,13 @@
 //! Tests for App.
 
 use super::*;
-use crate::jj::GraphLog;
+use crate::error::XorcistError;
+use crate::jj::{GraphLog, JjBackend, JjRunner};
 use crate::keys::dispatch_key_event;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 fn make_graph_log(count: usize) -> GraphLog {
     // Create a simple graph log with N commits
@@ -36,8 +38,8 @@ fn expected_change_id(i: usize) -> String {
     index_to_change_id(i)
 }
 
-fn make_runner() -> JjRunner {
-    JjRunner::new().with_work_dir(Path::new("/tmp"))
+fn make_runner() -> Arc<dyn JjBackend> {
+    Arc::new(JjRunner::new().with_work_dir(Path::new("/tmp")))
 }
 
 fn render_app_at_size(app: &mut App, width: u16, height: u16) {
@@ -650,4 +652,184 @@ fn test_ensure_diff_file_visible_zero_height() {
     // Zero height should not panic or change scroll
     app.ensure_diff_file_visible(0);
     assert_eq!(app.diff_state.file_scroll, 5);
+}
+
+#[derive(Debug, Default)]
+struct FakeJjBackend {
+    calls: Mutex<Vec<String>>,
+}
+
+impl FakeJjBackend {
+    fn record(&self, call: String) {
+        self.calls.lock().unwrap().push(call);
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl JjBackend for FakeJjBackend {
+    fn run_capture(&self, args: &[&str]) -> Result<String, XorcistError> {
+        self.record(format!("run_capture {}", args.join(" ")));
+        if args.first() == Some(&"log") {
+            Ok("@  qzmtztvn Author 1h refreshed\n".to_string())
+        } else if args.contains(&"--summary") {
+            Ok("M src/main.rs\n".to_string())
+        } else {
+            Ok("diff line\n".to_string())
+        }
+    }
+
+    fn is_available(&self) -> bool {
+        true
+    }
+
+    fn execute_new(&self, parent: &str) -> Result<CommandResult, XorcistError> {
+        self.record(format!("new {parent}"));
+        Ok(CommandResult {
+            success: true,
+            message: "new".to_string(),
+        })
+    }
+
+    fn execute_new_with_message(
+        &self,
+        parent: &str,
+        message: &str,
+    ) -> Result<CommandResult, XorcistError> {
+        self.record(format!("new -m {parent} {message}"));
+        Ok(CommandResult {
+            success: true,
+            message: "new message".to_string(),
+        })
+    }
+
+    fn execute_edit(&self, revision: &str) -> Result<CommandResult, XorcistError> {
+        self.record(format!("edit {revision}"));
+        Ok(CommandResult {
+            success: true,
+            message: "edit".to_string(),
+        })
+    }
+
+    fn execute_describe(
+        &self,
+        revision: &str,
+        message: &str,
+    ) -> Result<CommandResult, XorcistError> {
+        self.record(format!("describe {revision} {message}"));
+        Ok(CommandResult {
+            success: true,
+            message: "describe".to_string(),
+        })
+    }
+
+    fn execute_bookmark_set(
+        &self,
+        name: &str,
+        revision: &str,
+    ) -> Result<CommandResult, XorcistError> {
+        self.record(format!("bookmark {name} {revision}"));
+        Ok(CommandResult {
+            success: true,
+            message: "bookmark".to_string(),
+        })
+    }
+
+    fn execute_abandon(&self, revision: &str) -> Result<CommandResult, XorcistError> {
+        self.record(format!("abandon {revision}"));
+        Ok(CommandResult {
+            success: true,
+            message: "abandon".to_string(),
+        })
+    }
+
+    fn execute_squash(&self, revision: &str) -> Result<CommandResult, XorcistError> {
+        self.record(format!("squash {revision}"));
+        Ok(CommandResult {
+            success: true,
+            message: "squash".to_string(),
+        })
+    }
+
+    fn execute_git_fetch(&self) -> Result<CommandResult, XorcistError> {
+        self.record("git fetch".to_string());
+        Ok(CommandResult {
+            success: true,
+            message: "fetch".to_string(),
+        })
+    }
+
+    fn execute_git_push(&self) -> Result<CommandResult, XorcistError> {
+        self.record("git push".to_string());
+        Ok(CommandResult {
+            success: true,
+            message: "push".to_string(),
+        })
+    }
+
+    fn execute_undo(&self) -> Result<CommandResult, XorcistError> {
+        self.record("undo".to_string());
+        Ok(CommandResult {
+            success: true,
+            message: "undo".to_string(),
+        })
+    }
+
+    fn execute_rebase(
+        &self,
+        revision: &str,
+        destination: &str,
+    ) -> Result<CommandResult, XorcistError> {
+        self.record(format!("rebase {revision} {destination}"));
+        Ok(CommandResult {
+            success: true,
+            message: "rebase".to_string(),
+        })
+    }
+}
+
+fn poll_until_idle(app: &mut App) {
+    for _ in 0..100 {
+        app.poll_background_job().unwrap();
+        if !app.is_busy() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    panic!("background job did not finish");
+}
+
+#[test]
+fn test_command_dispatch_uses_fake_backend_and_refreshes() {
+    let backend = Arc::new(FakeJjBackend::default());
+    let graph_log = GraphLog::from_output("@  abcdefgh Author 1h original\n");
+    let mut app = App::new(graph_log, "/repo".to_string(), backend.clone());
+
+    app.execute_git_fetch().unwrap();
+    assert!(app.is_busy());
+    poll_until_idle(&mut app);
+
+    assert_eq!(app.last_command_result.as_ref().unwrap().message, "fetch");
+    assert_eq!(app.selected_change_id(), Some("qzmtztvn"));
+    let calls = backend.calls();
+    assert!(calls.iter().any(|call| call == "git fetch"));
+    assert!(calls.iter().any(|call| call.starts_with("run_capture log")));
+}
+
+#[test]
+fn test_background_job_blocks_second_command() {
+    let backend = Arc::new(FakeJjBackend::default());
+    let graph_log = GraphLog::from_output("@  abcdefgh Author 1h original\n");
+    let mut app = App::new(graph_log, "/repo".to_string(), backend);
+
+    app.execute_git_fetch().unwrap();
+    app.execute_new().unwrap();
+
+    assert_eq!(
+        app.last_command_result.as_ref().unwrap().message,
+        "Another jj command is still running"
+    );
+    poll_until_idle(&mut app);
 }

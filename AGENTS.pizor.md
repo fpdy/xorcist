@@ -7,7 +7,7 @@ This file is the shared policy for every Pi instance in this repo
 
 There are three logical node roles:
 
-- observer node: monitors lifecycle, drift, progress, cleanup, and keeps polling out of the user/main thread
+- observer node: monitors lifecycle, drift, progress, cleanup, sidecar report events, and keeps orchestration loops out of the user/main thread
 - master node: decomposes tasks, spawns workers, kills workers, manages global context
 - worker node: executes exactly one bounded assignment and reports back
 
@@ -122,11 +122,36 @@ A worker MUST NOT assume it shares context with the master
 
 Workers must explicitly report reusable facts.
 
+## User Thread Handoff Policy
+
+When the user asks to use the running observer/master, the user/main thread MUST NOT perform task orchestration itself.
+
+Required behavior:
+
+1. Read the active registry with `.pi/scripts/registry-list`.
+2. Identify the current running observer and master panes, preferring the latest active panes from the current `/pizor-start` session.
+3. Send the task request to the running master pane using `.pi/scripts/pane-send`, or use `.pi/scripts/task-handoff`.
+4. Send an observer request to the running observer pane using `.pi/scripts/pane-send`, or use `.pi/scripts/task-handoff`.
+5. The observer request MUST explicitly say that the user/main thread must not become the polling loop.
+6. Worker routing MUST name the current `master_pane` and `observer_pane`; do not use hard-coded pane IDs such as `0` or `1` unless they are explicitly the current panes.
+7. After both messages are sent successfully, the user/main thread MUST stop and remain idle unless the user asks a follow-up question.
+8. Do not poll workers, polling loop, pane-dump repeatedly, or synthesize results in the user/main thread.
+
+The user/main thread may only report:
+
+- task_id
+- master pane
+- observer pane
+- that handoff is complete and it is going idle
+
 ## Observer Policy
 
 The observer monitors dynamic worker lifecycle
 The observer does not assume fixed workers
-The observer SHOULD run `.pi/scripts/observer-loop` or an equivalent loop so the user/main thread does not repeatedly sleep and dump panes
+The observer MUST NOT run `.pi/scripts/observer-loop`.
+The observer MUST NOT run polling loops, sleep loops, pane-dump loops, or registry polling for lifecycle monitoring.
+The observer MUST NOT use sleep-based monitoring as a fallback.
+Lifecycle updates MUST arrive as node-to-node messages, primarily WORKER_REPORT_POINTER messages emitted by worker-report-submit.
 
 The observer tracks:
 
@@ -159,9 +184,12 @@ Allowed message types:
 
 - MASTER_DISPATCH
 - WORKER_REPORT
+- WORKER_REPORT_POINTER
 - OBSERVER_STATUS
 - MASTER_CONTROL
 - WORKER_CONTROL
+- USER_REQUEST
+- OBSERVER_REQUEST
 
 Every message MUST include:
 
@@ -191,6 +219,8 @@ Use only these status values unless the user explicitly changes the protocol:
 
 ## Report Requirements
 
+Full worker reports SHOULD be stored as sidecar files and announced by WORKER_REPORT_POINTER. Chat transport should carry pointers, not full raw reports, unless sidecar storage is unavailable.
+
 Every worker report must include:
 
 - summary
@@ -218,5 +248,7 @@ For substantial changes, review and verification are worker assignments, not mas
 - The master SHOULD spawn a read-only review worker before final synthesis.
 - The master SHOULD spawn a verification worker for project checks such as tests, lint, and formatting.
 - The master SHOULD NOT run final verification commands directly unless no worker can be spawned.
-- The observer SHOULD warn if final synthesis begins without review or verification reports.
+- The master reports final synthesis and cleanup status to the observer. The observer owns the all-work-complete decision after all required reports are captured and cleanup is complete.
+
+The observer SHOULD warn if final synthesis begins without review or verification reports.
 

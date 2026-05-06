@@ -8,10 +8,12 @@ mod navigation;
 #[cfg(test)]
 mod tests;
 
+use std::sync::{Arc, mpsc};
+
 use tui_input::Input;
 
 use crate::error::XorcistError;
-use crate::jj::{GraphLog, JjRunner, ShowOutput, fetch_show};
+use crate::jj::{DiffEntry, GraphLog, JjBackend, ShowOutput};
 use crate::text::truncate_str;
 
 /// Current view mode.
@@ -155,6 +157,38 @@ pub struct CommandResult {
     pub message: String,
 }
 
+/// Background jj job currently owned by the App.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobKind {
+    LoadMore,
+    GitFetch,
+    GitPush,
+    MutatingCommand,
+    OpenDetail,
+    OpenDiff,
+    RefreshDiff,
+}
+
+/// Result returned by background jj jobs.
+pub enum JobResult {
+    LoadMore {
+        previous_selection: Option<String>,
+        requested_limit: usize,
+        result: Result<GraphLog, XorcistError>,
+    },
+    CommandAndRefresh {
+        command: Result<CommandResult, XorcistError>,
+        graph_log: Result<GraphLog, XorcistError>,
+    },
+    Detail(Result<ShowOutput, XorcistError>),
+    Diff {
+        change_id: String,
+        files: Result<Vec<DiffEntry>, XorcistError>,
+        initial_diff: Option<Result<String, XorcistError>>,
+    },
+    DiffText(Result<String, XorcistError>),
+}
+
 /// Default batch size for loading more entries.
 const DEFAULT_BATCH_SIZE: usize = 500;
 
@@ -182,7 +216,7 @@ pub struct App {
     /// Whether the help modal is shown.
     pub show_help: bool,
     /// jj command runner.
-    runner: JjRunner,
+    runner: Arc<dyn JjBackend>,
     /// Modal dialog state.
     pub modal: ModalState,
     /// Last command result for status display.
@@ -199,11 +233,15 @@ pub struct App {
     pub is_loading_more: bool,
     /// Whether a load-more check has been requested.
     pending_load_more: bool,
+    /// Current background jj job, if any.
+    pub current_job: Option<JobKind>,
+    /// Completion receiver for the current background job.
+    job_rx: Option<mpsc::Receiver<JobResult>>,
 }
 
 impl App {
     /// Create a new App with the given graph log.
-    pub fn new(graph_log: GraphLog, repo_root: String, runner: JjRunner) -> Self {
+    pub fn new(graph_log: GraphLog, repo_root: String, runner: Arc<dyn JjBackend>) -> Self {
         Self {
             graph_log,
             selected: 0,
@@ -223,7 +261,61 @@ impl App {
             has_more_entries: false, // Will be set by set_log_limit
             is_loading_more: false,
             pending_load_more: false,
+            current_job: None,
+            job_rx: None,
         }
+    }
+
+    /// Clone the configured jj backend for a background job.
+    pub(crate) fn runner(&self) -> Arc<dyn JjBackend> {
+        Arc::clone(&self.runner)
+    }
+
+    /// Whether a background jj job is running.
+    pub fn is_busy(&self) -> bool {
+        self.current_job.is_some()
+    }
+
+    pub(crate) fn start_job(&mut self, kind: JobKind, rx: mpsc::Receiver<JobResult>) -> bool {
+        if self.is_busy() {
+            self.last_command_result = Some(CommandResult {
+                success: false,
+                message: "Another jj command is still running".to_string(),
+            });
+            return false;
+        }
+        self.current_job = Some(kind);
+        self.job_rx = Some(rx);
+        true
+    }
+
+    pub(crate) fn clear_job(&mut self) {
+        self.current_job = None;
+        self.job_rx = None;
+        self.is_loading_more = false;
+    }
+
+    /// Poll a background job once and apply its result if complete.
+    pub fn poll_background_job(&mut self) -> Result<(), XorcistError> {
+        let Some(rx) = self.job_rx.as_ref() else {
+            return Ok(());
+        };
+
+        match rx.try_recv() {
+            Ok(result) => {
+                self.apply_job_result(result)?;
+                self.clear_job();
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.last_command_result = Some(CommandResult {
+                    success: false,
+                    message: "Background jj command ended unexpectedly".to_string(),
+                });
+                self.clear_job();
+            }
+        }
+        Ok(())
     }
 
     /// Request application quit.
@@ -254,13 +346,17 @@ impl App {
     /// Open detail view for selected entry.
     pub fn open_detail(&mut self) -> Result<(), XorcistError> {
         if let Some(change_id) = self.selected_change_id() {
-            let show_output = fetch_show(&self.runner, change_id)?;
-            self.detail_state = Some(DetailState {
-                show_output,
-                scroll: 0,
-                content_height: 0, // Calculated during render
+            let change_id = change_id.to_string();
+            let runner = self.runner();
+            let (tx, rx) = mpsc::channel();
+            if !self.start_job(JobKind::OpenDetail, rx) {
+                return Ok(());
+            }
+            std::thread::spawn(move || {
+                let _ = tx.send(JobResult::Detail(crate::jj::fetch_show(
+                    &*runner, &change_id,
+                )));
             });
-            self.view = View::Detail;
         }
         Ok(())
     }

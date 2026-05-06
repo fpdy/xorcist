@@ -1,5 +1,6 @@
 //! xorcist - A TUI client for jj (Jujutsu VCS).
 
+mod actions;
 mod app;
 mod conventional;
 mod error;
@@ -8,7 +9,7 @@ mod keys;
 mod text;
 mod ui;
 
-use std::env;
+use std::{env, panic, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -16,7 +17,7 @@ use crossterm::event::{self, Event, KeyEventKind};
 
 use app::App;
 use error::XorcistError;
-use jj::{JjRunner, fetch_graph_log, find_jj_repo};
+use jj::{JjBackend, JjRunner, fetch_graph_log, find_jj_repo};
 
 /// A TUI client for jj (Jujutsu VCS).
 #[derive(Parser, Debug)]
@@ -60,7 +61,7 @@ fn main() -> Result<()> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| repo.root.to_string_lossy().to_string());
 
-    let mut app = App::new(graph_log, repo_root_display, runner);
+    let mut app = App::new(graph_log, repo_root_display, Arc::new(runner));
     app.set_log_limit(limit);
 
     // Run TUI
@@ -69,18 +70,34 @@ fn main() -> Result<()> {
 
 /// Run the TUI application.
 fn run_tui(mut app: App) -> Result<()> {
+    install_panic_restore_hook();
     let mut terminal = ratatui::init();
+    let _guard = TerminalRestoreGuard;
 
-    let result = run_event_loop(&mut terminal, &mut app);
+    run_event_loop(&mut terminal, &mut app)
+}
 
-    ratatui::restore();
+struct TerminalRestoreGuard;
 
-    result
+impl Drop for TerminalRestoreGuard {
+    fn drop(&mut self) {
+        ratatui::restore();
+    }
+}
+
+fn install_panic_restore_hook() {
+    let previous_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        ratatui::restore();
+        previous_hook(panic_info);
+    }));
 }
 
 /// Main event loop.
 fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
     loop {
+        app.poll_background_job()?;
+
         // Draw UI
         terminal.draw(|frame| {
             ui::render(frame, app);
@@ -93,18 +110,20 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
             terminal.draw(|frame| {
                 ui::render(frame, app);
             })?;
-            // Now perform the actual load
+            // Now start the actual load in the background.
             app.load_more_entries()
-                .context("failed to load more entries")?;
+                .context("failed to start loading more entries")?;
         }
 
         // Handle events
-        let event = event::read()?;
-        if let Event::Key(key) = &event
-            && key.kind == KeyEventKind::Press
-            && keys::dispatch_key_event(app, *key, &event)?
-        {
-            continue;
+        if event::poll(Duration::from_millis(50))? {
+            let event = event::read()?;
+            if let Event::Key(key) = &event
+                && key.kind == KeyEventKind::Press
+                && keys::dispatch_key_event(app, *key, &event)?
+            {
+                continue;
+            }
         }
 
         if app.should_quit {

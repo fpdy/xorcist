@@ -1,7 +1,7 @@
 //! jj show command execution.
 
 use crate::error::XorcistError;
-use crate::jj::runner::JjRunner;
+use crate::jj::runner::JjBackend;
 
 /// Output from jj show command.
 #[derive(Debug, Clone)]
@@ -55,8 +55,33 @@ pub enum DiffStatus {
 /// Uses shortest() to get unique prefix for change_id and commit_id.
 const SHOW_TEMPLATE: &str = r#"change_id.shortest(4).prefix() ++ "\x00" ++ change_id.shortest(4).rest() ++ "\x00" ++ commit_id.shortest(4).prefix() ++ "\x00" ++ commit_id.shortest(4).rest() ++ "\x00" ++ author.name() ++ "\x00" ++ committer.timestamp().ago() ++ "\x00" ++ description ++ "\x00" ++ bookmarks.join(",") ++ "\n""#;
 
+/// Number of null-byte-separated metadata fields emitted by `SHOW_TEMPLATE`.
+const SHOW_META_FIELD_COUNT: usize = ShowMetaField::COUNT;
+
+/// Field order for metadata emitted by `SHOW_TEMPLATE`.
+#[derive(Debug, Clone, Copy)]
+#[repr(usize)]
+enum ShowMetaField {
+    ChangeIdPrefix = 0,
+    ChangeIdRest = 1,
+    CommitIdPrefix = 2,
+    CommitIdRest = 3,
+    Author = 4,
+    Timestamp = 5,
+    Description = 6,
+    Bookmarks = 7,
+}
+
+impl ShowMetaField {
+    const COUNT: usize = 8;
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
 /// Fetch show output for a revision.
-pub fn fetch_show(runner: &JjRunner, revision: &str) -> Result<ShowOutput, XorcistError> {
+pub fn fetch_show(runner: &dyn JjBackend, revision: &str) -> Result<ShowOutput, XorcistError> {
     // 1. Fetch metadata using template
     let meta_output =
         runner.run_capture(&["log", "-r", revision, "--no-graph", "-T", SHOW_TEMPLATE])?;
@@ -83,7 +108,7 @@ pub fn fetch_show(runner: &JjRunner, revision: &str) -> Result<ShowOutput, Xorci
 
 /// Fetch diff output for a specific file in a revision.
 pub fn fetch_diff_file(
-    runner: &JjRunner,
+    runner: &dyn JjBackend,
     revision: &str,
     path: &str,
 ) -> Result<String, XorcistError> {
@@ -115,22 +140,25 @@ fn parse_show_meta(output: &str) -> Result<ShowMeta, XorcistError> {
     let output = output.trim_end_matches('\n');
     let parts: Vec<&str> = output.split('\x00').collect();
 
-    if parts.len() != 8 {
+    if parts.len() != SHOW_META_FIELD_COUNT {
         return Err(XorcistError::JjError(format!(
-            "unexpected show output format: expected 8 fields, got {}",
+            "unexpected show output format: expected {} fields, got {}",
+            SHOW_META_FIELD_COUNT,
             parts.len()
         )));
     }
 
-    let bookmarks = super::parse_bookmarks_field(parts[7]);
+    let bookmarks = super::parse_bookmarks_field(parts[ShowMetaField::Bookmarks.index()]);
 
     // Trim trailing newline from description (jj adds one at the end)
-    let description = parts[6].trim_end_matches('\n').to_string();
+    let description = parts[ShowMetaField::Description.index()]
+        .trim_end_matches('\n')
+        .to_string();
 
-    let change_id_prefix = parts[0].to_string();
-    let change_id_rest = parts[1].to_string();
-    let commit_id_prefix = parts[2].to_string();
-    let commit_id_rest = parts[3].to_string();
+    let change_id_prefix = parts[ShowMetaField::ChangeIdPrefix.index()].to_string();
+    let change_id_rest = parts[ShowMetaField::ChangeIdRest.index()].to_string();
+    let commit_id_prefix = parts[ShowMetaField::CommitIdPrefix.index()].to_string();
+    let commit_id_rest = parts[ShowMetaField::CommitIdRest.index()].to_string();
 
     Ok(ShowMeta {
         change_id: format!("{change_id_prefix}{change_id_rest}"),
@@ -139,8 +167,8 @@ fn parse_show_meta(output: &str) -> Result<ShowMeta, XorcistError> {
         commit_id: format!("{commit_id_prefix}{commit_id_rest}"),
         commit_id_prefix,
         commit_id_rest,
-        author: parts[4].to_string(),
-        timestamp: parts[5].to_string(),
+        author: parts[ShowMetaField::Author.index()].to_string(),
+        timestamp: parts[ShowMetaField::Timestamp.index()].to_string(),
         description,
         bookmarks,
     })
@@ -177,6 +205,19 @@ pub(crate) fn parse_diff_summary(output: &str) -> Vec<DiffEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_show_meta_field_count_matches_template_contract() {
+        assert_eq!(SHOW_META_FIELD_COUNT, 8);
+        assert_eq!(ShowMetaField::ChangeIdPrefix.index(), 0);
+        assert_eq!(ShowMetaField::ChangeIdRest.index(), 1);
+        assert_eq!(ShowMetaField::CommitIdPrefix.index(), 2);
+        assert_eq!(ShowMetaField::CommitIdRest.index(), 3);
+        assert_eq!(ShowMetaField::Author.index(), 4);
+        assert_eq!(ShowMetaField::Timestamp.index(), 5);
+        assert_eq!(ShowMetaField::Description.index(), 6);
+        assert_eq!(ShowMetaField::Bookmarks.index(), 7);
+    }
 
     #[test]
     fn test_parse_show_meta() {
@@ -304,6 +345,20 @@ D src/old_file.rs
         let output = "";
         let entries = parse_diff_summary(output);
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_parse_diff_summary_renamed_and_copied() {
+        let output = r#"R src/old.rs -> src/new.rs
+C src/template.rs -> src/copy.rs
+"#;
+        let entries = parse_diff_summary(output);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].status, DiffStatus::Renamed);
+        assert_eq!(entries[0].path, "src/old.rs -> src/new.rs");
+        assert_eq!(entries[1].status, DiffStatus::Copied);
+        assert_eq!(entries[1].path, "src/template.rs -> src/copy.rs");
     }
 
     #[test]

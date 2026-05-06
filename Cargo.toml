@@ -41,4 +41,3 @@ tempfile = "3.24"
 [profile.release]
 lto = true
 codegen-units = 1
-panic = "abort"
